@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>What'sOn — Control Panel</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --purple:#6C5CE7; --purple2:#a29bfe; --coral:#FF5E57; --green:#2ED573;
+    --amber:#FFA502; --cyan:#00cec9; --bg:#0E0E12; --card:#1A1A22; --card2:#22222C;
+    --border:rgba(255,255,255,0.08); --text:#F2F2F5; --text2:#9B9BA8; --text3:#5E5E6B;
+  }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); padding-bottom:40px; }
+  .wrap { max-width:680px; margin:0 auto; padding:20px 16px; }
+  .logo { font-size:24px; font-weight:800; letter-spacing:-0.5px; margin-bottom:2px; }
+  .logo em { font-style:normal; background:linear-gradient(135deg,var(--purple),var(--coral)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .tagline { font-size:13px; color:var(--text3); margin-bottom:20px; }
+  .card { background:var(--card); border:0.5px solid var(--border); border-radius:16px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:0.07em; color:var(--text3); margin-bottom:14px; }
+  label { font-size:12px; font-weight:600; color:var(--text2); display:block; margin-bottom:5px; }
+  input { width:100%; background:var(--card2); border:0.5px solid var(--border); border-radius:10px; padding:11px 12px; font-size:13px; color:var(--text); outline:none; margin-bottom:14px; font-family:inherit; }
+  input:focus { border-color:var(--purple); }
+  .btn { background:var(--purple); color:white; border:none; border-radius:10px; padding:12px 18px; font-size:13px; font-weight:700; cursor:pointer; width:100%; }
+  .btn:active { transform:scale(0.98); }
+  .btn.secondary { background:var(--card2); border:0.5px solid var(--border); color:var(--text); }
+  .btn.green { background:var(--green); color:#06320f; }
+  .btn-row { display:flex; gap:8px; }
+  .btn-row .btn { flex:1; }
+  .status { font-size:12px; padding:10px 12px; border-radius:10px; margin-top:12px; display:none; }
+  .status.show { display:block; }
+  .status.ok { background:rgba(46,213,115,0.12); color:#8ef0b5; border:0.5px solid rgba(46,213,115,0.3); }
+  .status.err { background:rgba(255,94,87,0.12); color:#ffb0ac; border:0.5px solid rgba(255,94,87,0.3); }
+  .status.info { background:rgba(108,92,231,0.12); color:#c5bdf5; border:0.5px solid rgba(108,92,231,0.3); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .stats-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .stat { background:var(--card2); border-radius:10px; padding:12px; }
+  .stat b { font-size:22px; display:block; }
+  .stat span { font-size:11px; color:var(--text3); }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .tab { flex:1; padding:9px; border-radius:9px; background:var(--card2); border:none; color:var(--text2); font-size:12px; font-weight:700; cursor:pointer; }
+  .tab.active { background:var(--purple); color:white; }
+  .item { background:var(--card2); border-radius:10px; padding:11px 13px; margin-bottom:8px; }
+  .item-name { font-size:13px; font-weight:700; }
+  .item-sub { font-size:11px; color:var(--text3); margin-top:2px; }
+  .item-tags { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+  .tag { font-size:10px; padding:2px 7px; border-radius:6px; background:var(--card); color:var(--text2); }
+  .muted { font-size:12px; color:var(--text3); text-align:center; padding:20px; }
+  #map { height:340px; border-radius:12px; margin-top:12px; }
+  .spinner { width:14px; height:14px; border:2px solid rgba(255,255,255,0.3); border-top-color:white; border-radius:50%; animation:spin 0.7s linear infinite; display:inline-block; vertical-align:middle; margin-right:6px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .saved-badge { font-size:11px; color:var(--green); margin-left:8px; }
+  .hint { font-size:11px; color:var(--text3); margin:-8px 0 14px; line-height:1.4; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">What's<em>On</em></div>
+  <div class="tagline">Control panel — manage your live venue data engine</div>
+
+  <!-- CONNECTION -->
+  <div class="card">
+    <h2>🔌 Connect to your backend</h2>
+    <label>Railway backend URL</label>
+    <input id="apiUrl" placeholder="https://your-backend.up.railway.app" />
+    <label>Sync secret</label>
+    <input id="syncSecret" type="password" placeholder="your SYNC_SECRET" />
+    <div class="hint">These are saved in your browser only. Find them in Railway → your backend service → Settings (URL) and Variables (SYNC_SECRET).</div>
+    <button class="btn" onclick="testConnection()">Connect & check health</button>
+    <div id="connStatus" class="status"></div>
+  </div>
+
+  <!-- SYNC -->
+  <div class="card" id="syncCard" style="opacity:0.5;pointer-events:none">
+    <h2>🔄 Pull live data</h2>
+    <div class="hint">Runs Google, Foursquare, OpenStreetMap, Skiddle & Eventbrite, then dedupes and stores everything. Takes 2–4 minutes.</div>
+    <div class="btn-row">
+      <button class="btn green" onclick="runSync('liverpool')">Sync Liverpool</button>
+      <button class="btn secondary" onclick="checkStatus()">Refresh status</button>
+    </div>
+    <div id="syncStatus" class="status"></div>
+  </div>
+
+  <!-- DATA -->
+  <div class="card" id="dataCard" style="opacity:0.5;pointer-events:none">
+    <h2>📊 Your data</h2>
+    <div class="stats-grid" style="margin-bottom:14px">
+      <div class="stat"><b id="venueCount">—</b><span>Venues</span></div>
+      <div class="stat"><b id="eventCount">—</b><span>Events</span></div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" id="tabVenues" onclick="showTab('venues')">Venues</button>
+      <button class="tab" id="tabEvents" onclick="showTab('events')">Events</button>
+      <button class="tab" id="tabMap" onclick="showTab('map')">Map</button>
+    </div>
+    <div id="listView"></div>
+    <div id="mapView" style="display:none"><div id="map"></div></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let API = localStorage.getItem('wo_api') || ''
+let SECRET = localStorage.getItem('wo_secret') || ''
+let map = null, markers = []
+let venues = [], events = []
+
+// restore saved values
+document.getElementById('apiUrl').value = API
+document.getElementById('syncSecret').value = SECRET
+
+function cleanUrl(u) { return u.trim().replace(/\/+$/, '') }
+
+function setStatus(id, msg, type) {
+  const el = document.getElementById(id)
+  el.className = 'status show ' + type
+  el.innerHTML = msg
+}
+
+async function testConnection() {
+  API = cleanUrl(document.getElementById('apiUrl').value)
+  SECRET = document.getElementById('syncSecret').value.trim()
+  if (!API) { setStatus('connStatus', 'Enter your Railway URL first', 'err'); return }
+  localStorage.setItem('wo_api', API)
+  localStorage.setItem('wo_secret', SECRET)
+  setStatus('connStatus', '<span class="spinner"></span>Checking...', 'info')
+  try {
+    const r = await fetch(API + '/health')
+    const d = await r.json()
+    if (d.status === 'ok' && d.db === 'up') {
+      setStatus('connStatus', '<span class="dot" style="background:#2ED573"></span>Connected! Database is up. ✓', 'ok')
+      enableCards()
+      checkStatus()
+      loadData()
+    } else if (d.db === 'down') {
+      setStatus('connStatus', '<span class="dot" style="background:#FFA502"></span>Connected, but database is down. Check DATABASE_URL in Railway.', 'err')
+    }
+  } catch (e) {
+    setStatus('connStatus', 'Could not reach that URL. Check it\'s correct and the backend is running.', 'err')
+  }
+}
+
+function enableCards() {
+  document.getElementById('syncCard').style.opacity = '1'
+  document.getElementById('syncCard').style.pointerEvents = 'auto'
+  document.getElementById('dataCard').style.opacity = '1'
+  document.getElementById('dataCard').style.pointerEvents = 'auto'
+}
+
+async function runSync(city) {
+  setStatus('syncStatus', '<span class="spinner"></span>Starting sync... this runs in the background for 2–4 mins.', 'info')
+  try {
+    const r = await fetch(API + '/sync/' + city + '?secret=' + encodeURIComponent(SECRET))
+    const d = await r.json()
+    if (r.status === 401) { setStatus('syncStatus', 'Wrong sync secret. Check it matches Railway exactly.', 'err'); return }
+    setStatus('syncStatus', '<span class="dot" style="background:#2ED573"></span>' + (d.message || 'Sync started!') + ' Click "Refresh status" in a minute.', 'ok')
+    setTimeout(checkStatus, 8000)
+  } catch (e) {
+    setStatus('syncStatus', 'Sync request failed: ' + e.message, 'err')
+  }
+}
+
+async function checkStatus() {
+  try {
+    const r = await fetch(API + '/sync/status')
+    const d = await r.json()
+    if (!d.runs || !d.runs.length) {
+      setStatus('syncStatus', 'No syncs have run yet. Click "Sync Liverpool" to start.', 'info')
+      return
+    }
+    const last = d.runs[0]
+    const when = new Date(last.started_at).toLocaleTimeString()
+    if (last.status === 'running') {
+      setStatus('syncStatus', '<span class="spinner"></span>Sync running (started ' + when + ')... refresh in a moment.', 'info')
+      setTimeout(checkStatus, 8000)
+    } else if (last.status === 'done') {
+      setStatus('syncStatus', '<span class="dot" style="background:#2ED573"></span>Last sync done: +' + last.venues_added + ' venues, +' + last.events_added + ' events.', 'ok')
+      loadData()
+    } else if (last.status === 'error') {
+      setStatus('syncStatus', 'Last sync errored: ' + (last.error || 'unknown'), 'err')
+    }
+  } catch (e) {
+    setStatus('syncStatus', 'Could not fetch status: ' + e.message, 'err')
+  }
+}
+
+async function loadData() {
+  try {
+    const [vr, er] = await Promise.all([
+      fetch(API + '/venues?city=Liverpool&limit=200').then(r => r.json()),
+      fetch(API + '/events?city=Liverpool&limit=200').then(r => r.json())
+    ])
+    venues = vr.venues || []
+    events = er.events || []
+    document.getElementById('venueCount').textContent = vr.count ?? venues.length
+    document.getElementById('eventCount').textContent = er.count ?? events.length
+    renderList()
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+let currentTab = 'venues'
+function showTab(t) {
+  currentTab = t
+  document.getElementById('tabVenues').classList.toggle('active', t==='venues')
+  document.getElementById('tabEvents').classList.toggle('active', t==='events')
+  document.getElementById('tabMap').classList.toggle('active', t==='map')
+  document.getElementById('listView').style.display = t==='map' ? 'none' : 'block'
+  document.getElementById('mapView').style.display = t==='map' ? 'block' : 'none'
+  if (t === 'map') initMap()
+  else renderList()
+}
+
+function renderList() {
+  const el = document.getElementById('listView')
+  if (currentTab === 'venues') {
+    if (!venues.length) { el.innerHTML = '<div class="muted">No venues yet — run a sync.</div>'; return }
+    el.innerHTML = venues.map(v => `
+      <div class="item">
+        <div class="item-name">${esc(v.name)}</div>
+        <div class="item-sub">${esc(v.address || '')}</div>
+        <div class="item-tags">
+          <span class="tag">${v.category_slug}</span>
+          ${v.rating ? `<span class="tag">★ ${v.rating}</span>` : ''}
+          ${v.distance_m ? `<span class="tag">${v.distance_m}m</span>` : ''}
+        </div>
+      </div>`).join('')
+  } else if (currentTab === 'events') {
+    if (!events.length) { el.innerHTML = '<div class="muted">No events yet — run a sync.</div>'; return }
+    el.innerHTML = events.map(e => `
+      <div class="item">
+        <div class="item-name">${esc(e.name)}</div>
+        <div class="item-sub">${esc(e.venue_name || 'Unknown venue')} · ${new Date(e.starts_at).toLocaleDateString()}</div>
+        <div class="item-tags">
+          ${e.is_free ? '<span class="tag">FREE</span>' : e.min_price ? `<span class="tag">£${e.min_price}</span>` : ''}
+          ${e.genre ? `<span class="tag">${esc(e.genre)}</span>` : ''}
+        </div>
+      </div>`).join('')
+  }
+}
+
+function initMap() {
+  if (!map) {
+    map = L.map('map').setView([53.4084, -2.9916], 13)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution:'© OSM © CARTO' }).addTo(map)
+  }
+  markers.forEach(m => m.remove()); markers = []
+  const colors = { pub:'#FFA502', bar:'#FF5E57', nightclub:'#6C5CE7', cafe:'#2ED573', restaurant:'#00cec9', music_venue:'#e84393' }
+  venues.forEach(v => {
+    const c = colors[v.category_slug] || '#9B9BA8'
+    const m = L.circleMarker([v.lat, v.lng], { radius:6, fillColor:c, color:'#0E0E12', weight:1.5, fillOpacity:0.9 }).addTo(map)
+    m.bindPopup('<b>'+esc(v.name)+'</b><br>'+v.category_slug+(v.rating?' · ★'+v.rating:''))
+    markers.push(m)
+  })
+  setTimeout(() => map.invalidateSize(), 100)
+}
+
+function esc(s) { return String(s||'').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) }
+
+// auto-connect if we have saved values
+if (API) testConnection()
+</script>
+</body>
+</html>
