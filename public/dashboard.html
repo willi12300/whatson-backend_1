@@ -74,9 +74,32 @@
   <!-- SYNC -->
   <div class="card" id="syncCard" style="opacity:0.5;pointer-events:none">
     <h2>🔄 Pull live data</h2>
-    <div class="hint">Runs Google, Foursquare, OpenStreetMap, Skiddle & Eventbrite, then dedupes and stores everything. Takes 2–4 minutes.</div>
+    <div class="hint">Runs Google, Foursquare, OpenStreetMap, Skiddle, Eventbrite & Ticketmaster, then dedupes and stores everything. Takes 2–4 minutes per city. Each city uses ~£2 of Google credit.</div>
+    <label>Choose a city to sync</label>
+    <select id="citySelect" style="width:100%;background:var(--card2);border:0.5px solid var(--border);border-radius:10px;padding:11px 12px;font-size:13px;color:var(--text);margin-bottom:14px;font-family:inherit">
+      <optgroup label="UK — full coverage">
+        <option value="liverpool">Liverpool</option>
+        <option value="manchester">Manchester</option>
+        <option value="london">London</option>
+        <option value="birmingham">Birmingham</option>
+        <option value="leeds">Leeds</option>
+        <option value="glasgow">Glasgow</option>
+        <option value="bristol">Bristol</option>
+        <option value="edinburgh">Edinburgh</option>
+      </optgroup>
+      <optgroup label="International — venues + Ticketmaster events">
+        <option value="newyork">New York</option>
+        <option value="losangeles">Los Angeles</option>
+        <option value="berlin">Berlin</option>
+        <option value="amsterdam">Amsterdam</option>
+        <option value="barcelona">Barcelona</option>
+        <option value="paris">Paris</option>
+        <option value="dublin">Dublin</option>
+        <option value="sydney">Sydney</option>
+      </optgroup>
+    </select>
     <div class="btn-row">
-      <button class="btn green" onclick="runSync('liverpool')">Sync Liverpool</button>
+      <button class="btn green" onclick="runSync(document.getElementById('citySelect').value)">Sync this city</button>
       <button class="btn secondary" onclick="checkStatus()">Refresh status</button>
     </div>
     <div id="syncStatus" class="status"></div>
@@ -148,10 +171,13 @@ function enableCards() {
   document.getElementById('dataCard').style.pointerEvents = 'auto'
 }
 
+let lastCity = 'liverpool'
 async function runSync(city) {
-  setStatus('syncStatus', '<span class="spinner"></span>Starting sync... this runs in the background for 2–4 mins.', 'info')
+  lastCity = city
+  setStatus('syncStatus', '<span class="spinner"></span>Starting ' + city + ' sync... runs in background for 2–4 mins.', 'info')
   try {
-    const r = await fetch(API + '/sync/' + city + '?secret=' + encodeURIComponent(SECRET))
+    const route = city === 'liverpool' ? '/sync/liverpool' : '/sync/city/' + city
+    const r = await fetch(API + route + '?secret=' + encodeURIComponent(SECRET))
     const d = await r.json()
     if (r.status === 401) { setStatus('syncStatus', 'Wrong sync secret. Check it matches Railway exactly.', 'err'); return }
     setStatus('syncStatus', '<span class="dot" style="background:#2ED573"></span>' + (d.message || 'Sync started!') + ' Click "Refresh status" in a minute.', 'ok')
@@ -188,8 +214,8 @@ async function checkStatus() {
 async function loadData() {
   try {
     const [vr, er] = await Promise.all([
-      fetch(API + '/venues?city=Liverpool&limit=200').then(r => r.json()),
-      fetch(API + '/events?city=Liverpool&limit=200').then(r => r.json())
+      fetch(API + '/venues?limit=500').then(r => r.json()),
+      fetch(API + '/events?limit=500').then(r => r.json())
     ])
     venues = vr.venues || []
     events = er.events || []

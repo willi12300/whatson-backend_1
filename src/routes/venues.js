@@ -5,9 +5,9 @@ const router = express.Router()
 
 router.get('/', async (req, res, next) => {
   try {
-    const { lat, lng, radius = 3000, category, city = 'Liverpool', search, limit = 100 } = req.query
+    const { lat, lng, radius = 3000, category, city, search, limit = 100 } = req.query
     const params = [], where = ['1=1']
-    params.push(city); where.push(`city = $${params.length}`)
+    if (city) { params.push(city); where.push(`city = $${params.length}`) }
     if (category) { params.push(category); where.push(`category_slug = $${params.length}`) }
     if (search) { params.push(`%${search}%`); where.push(`name ILIKE $${params.length}`) }
     if (lat && lng) {

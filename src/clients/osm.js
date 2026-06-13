@@ -7,7 +7,7 @@ async function fetchVenues(bbox) {
   const query = `[out:json][timeout:60];(node${filter}(${south},${west},${north},${east});way${filter}(${south},${west},${north},${east}););out center tags;`
   try {
     const res = await axios.post('https://overpass-api.de/api/interpreter', `data=${encodeURIComponent(query)}`, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'WhatsOn/1.0 (venue discovery app)' },
       timeout: 70000,
     })
     const out = []

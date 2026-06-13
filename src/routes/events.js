@@ -4,9 +4,9 @@ const router = express.Router()
 
 router.get('/', async (req, res, next) => {
   try {
-    const { city = 'Liverpool', category, from, to, limit = 100 } = req.query
+    const { city, category, from, to, limit = 100 } = req.query
     const params = [], where = [`e.status='active'`]
-    params.push(city); where.push(`v.city=$${params.length}`)
+    if (city) { params.push(city); where.push(`v.city=$${params.length}`) }
     if (category) { params.push(category); where.push(`e.category=$${params.length}`) }
     if (from) { params.push(from); where.push(`e.starts_at>=$${params.length}`) } else where.push(`e.starts_at>=now()`)
     if (to) { params.push(to); where.push(`e.starts_at<=$${params.length}`) }

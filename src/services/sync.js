@@ -4,6 +4,7 @@ const foursquare = require('../clients/foursquare')
 const osm = require('../clients/osm')
 const skiddle = require('../clients/skiddle')
 const eventbrite = require('../clients/eventbrite')
+const ticketmaster = require('../clients/ticketmaster')
 const { deduplicate, mergeCluster } = require('./dedup')
 const { matchEventToVenue } = require('./matchEvents')
 const logger = require('../utils/logger')
@@ -70,11 +71,12 @@ async function syncCity(cityPreset) {
         if (isNew) stats.venuesAdded++; else stats.venuesUpdated++
       } catch (err) { logger.error('Venue upsert failed:', err.message) }
     }
-    const [sk, eb] = await Promise.all([
+    const [sk, eb, tm] = await Promise.all([
       skiddle.fetchEvents(cityPreset.lat, cityPreset.lng, cityPreset.radiusMiles),
       eventbrite.fetchEvents(cityPreset.lat, cityPreset.lng, cityPreset.radiusMiles),
+      ticketmaster.fetchEvents(cityPreset.lat, cityPreset.lng, cityPreset.radiusMiles),
     ])
-    const allEvents = [...sk, ...eb]
+    const allEvents = [...sk, ...eb, ...tm]
     logger.info(`Raw events: ${allEvents.length}`)
     for (const e of allEvents) {
       try {
