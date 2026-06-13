@@ -1,0 +1,476 @@
+// prisma/schema.prisma
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis, pg_trgm, unaccent]
+}
+
+// ─────────────────────────────────────────────
+// VENUES
+// ─────────────────────────────────────────────
+
+model Venue {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String?  @unique
+  canonical   Boolean  @default(true)
+  canonicalId String?  // points to master if this is a duplicate
+
+  // location
+  lat         Float
+  lng         Float
+  address     String?
+  city        String   @default("Liverpool")
+  postcode    String?
+  country     String   @default("GB")
+
+  // classification
+  venueType   VenueType @default(OTHER)
+  subtypes    String[]  // e.g. ["live_music", "karaoke", "sports_bar"]
+  vibeTags    String[]  // e.g. ["lively", "cosy", "student-friendly"]
+
+  // content
+  photos      Json     @default("[]")  // [{url, source, width, height}]
+  coverPhoto  String?
+  bio         String?
+  website     String?
+  phone       String?
+  email       String?
+
+  // data quality
+  rating      Float?
+  ratingCount Int?
+  priceLevel  Int?      // 0–4
+  openingHours Json?    // {monday: [{open:"09:00", close:"23:00"}], ...}
+  businessStatus String? // OPERATIONAL, CLOSED_TEMPORARILY, etc.
+
+  // source tracking - which external APIs know about this venue
+  sourceRefs  Json     @default("{}")
+  // shape: {
+  //   google_place_id?: string,
+  //   foursquare_id?: string,
+  //   osm_id?: string,
+  //   skiddle_venue_id?: string,
+  //   eventbrite_venue_id?: string
+  // }
+
+  // claim status
+  claimed     Boolean  @default(false)
+  ownerId     String?
+  verifiedAt  DateTime?
+  verifyMethod String?  // "meta" | "phone" | "postcard" | "manual"
+
+  // social connections
+  instagramHandle   String?
+  facebookPageId    String?
+  instagramBizId    String?
+  metaAccessToken   String?  // encrypted in prod
+  metaTokenExpiry   DateTime?
+  socialSyncMode    SyncMode @default(DISABLED)
+  lastSyncedAt      DateTime?
+
+  // stats cache (refreshed nightly)
+  followerCount     Int      @default(0)
+  totalViews        Int      @default(0)
+  totalRedemptions  Int      @default(0)
+
+  // timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime @default(now()) // last time any source returned this venue
+
+  // relations
+  events      Event[]
+  posts       Post[]
+  offers      Offer[]
+  checkins    Checkin[]
+  vibeReports VibeReport[]
+  communityPosts CommunityPost[]
+  analyticsEvents AnalyticsEvent[]
+  staff       VenueStaff[]
+
+  @@index([lat, lng])
+  @@index([city])
+  @@index([venueType])
+  @@index([canonical])
+  @@index([claimed])
+}
+
+enum VenueType {
+  PUB
+  BAR
+  NIGHTCLUB
+  RESTAURANT
+  CAFE
+  COMEDY_CLUB
+  MUSIC_VENUE
+  KARAOKE
+  HOTEL_BAR
+  ROOFTOP
+  SPORTS_BAR
+  COCKTAIL_BAR
+  WINE_BAR
+  OTHER
+}
+
+enum SyncMode {
+  DISABLED
+  AUTO       // all posts auto-sync
+  STORIES_ONLY
+  APPROVAL_QUEUE
+}
+
+// ─────────────────────────────────────────────
+// EVENTS
+// ─────────────────────────────────────────────
+
+model Event {
+  id          String   @id @default(cuid())
+  venueId     String?
+  venue       Venue?   @relation(fields: [venueId], references: [id])
+
+  // content
+  name        String
+  description String?
+  imageUrl    String?
+  category    String?  // "music", "comedy", "club_night", etc.
+  genre       String?  // "indie", "techno", "jazz", etc.
+
+  // time
+  startsAt    DateTime
+  endsAt      DateTime?
+  timezone    String   @default("Europe/London")
+
+  // ticketing
+  ticketUrl   String?
+  minPrice    Float?
+  maxPrice    Float?
+  isFree      Boolean  @default(false)
+
+  // source tracking
+  sourceRefs  Json     @default("{}")
+  // shape: {skiddle_id?, eventbrite_id?, ticketmaster_id?}
+
+  // matching quality
+  matchedConfidence Float? // 0.0–1.0 how sure we are about venueId
+  rawVenueName      String? // original venue name from source
+  rawAddress        String? // original address from source
+
+  // status
+  status      EventStatus @default(ACTIVE)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([venueId])
+  @@index([startsAt])
+  @@index([status])
+}
+
+enum EventStatus {
+  ACTIVE
+  CANCELLED
+  POSTPONED
+  EXPIRED
+}
+
+// ─────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  authId        String   @unique // Firebase/Supabase auth UID
+  displayName   String?
+  avatar        String?
+  email         String?  @unique
+  phone         String?
+  bio           String?
+
+  homeCity      String?
+  tasteTags     String[] // ["jazz", "cocktail_bars", "live_music"]
+
+  // social
+  followedVenues  VenueFollow[]
+  checkins        Checkin[]
+  vibeReports     VibeReport[]
+  communityPosts  CommunityPost[]
+  claimedOffers   OfferClaim[]
+  analyticsEvents AnalyticsEvent[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model VenueFollow {
+  userId    String
+  venueId   String
+  user      User   @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@id([userId, venueId])
+  @@index([venueId])
+}
+
+// ─────────────────────────────────────────────
+// COMMUNITY FEATURES
+// ─────────────────────────────────────────────
+
+model Checkin {
+  id        String   @id @default(cuid())
+  userId    String
+  venueId   String
+  user      User     @relation(fields: [userId], references: [id])
+  venue     Venue    @relation(fields: [venueId], references: [id])
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([venueId, createdAt])
+  @@index([userId])
+}
+
+model VibeReport {
+  id        String   @id @default(cuid())
+  userId    String
+  venueId   String
+  user      User     @relation(fields: [userId], references: [id])
+  venue     Venue    @relation(fields: [venueId], references: [id])
+  level     Int      // 1=dead 2=chill 3=busy 4=rammed
+  expiresAt DateTime // +90 mins from creation
+  createdAt DateTime @default(now())
+
+  @@index([venueId, expiresAt])
+}
+
+model CommunityPost {
+  id        String   @id @default(cuid())
+  userId    String
+  venueId   String
+  user      User     @relation(fields: [userId], references: [id])
+  venue     Venue    @relation(fields: [venueId], references: [id])
+  type      CommunityPostType @default(TEXT)
+  body      String?
+  mediaUrl  String?
+  likeCount Int      @default(0)
+  status    String   @default("active") // active | removed
+
+  createdAt DateTime @default(now())
+
+  @@index([venueId, createdAt])
+}
+
+enum CommunityPostType {
+  TEXT
+  PHOTO
+  VIDEO
+  CHECKIN
+}
+
+// ─────────────────────────────────────────────
+// VENUE CONTENT (posts, stories)
+// ─────────────────────────────────────────────
+
+model Post {
+  id        String   @id @default(cuid())
+  venueId   String
+  venue     Venue    @relation(fields: [venueId], references: [id])
+  type      PostType @default(NATIVE)
+
+  title     String?
+  body      String?
+  mediaUrl  String?
+  mediaType String?  // "image" | "video" | "reel"
+
+  source    PostSource @default(NATIVE)
+  igMediaId String?    // original Instagram media ID if synced
+  fbPostId  String?    // original Facebook post ID if synced
+
+  expiresAt DateTime?
+  viewCount Int      @default(0)
+  tapCount  Int      @default(0)
+
+  offer     Offer?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([venueId, createdAt])
+  @@index([expiresAt])
+}
+
+enum PostType {
+  NATIVE       // posted via What'sOn composer
+  TONIGHTS_ACT
+  FLASH_DEAL
+  CROWD_UPDATE
+  ANNOUNCEMENT
+  SYNCED_IG    // pulled from Instagram
+  SYNCED_FB    // pulled from Facebook
+}
+
+enum PostSource {
+  NATIVE
+  INSTAGRAM
+  FACEBOOK
+}
+
+// ─────────────────────────────────────────────
+// OFFERS & QR REDEMPTIONS
+// ─────────────────────────────────────────────
+
+model Offer {
+  id           String   @id @default(cuid())
+  venueId      String
+  venue        Venue    @relation(fields: [venueId], references: [id])
+  postId       String?  @unique
+  post         Post?    @relation(fields: [postId], references: [id])
+
+  title        String
+  terms        String?
+  validFrom    DateTime
+  validUntil   DateTime
+  redemptionCap Int?    // null = unlimited
+  perUserLimit  Int     @default(1)
+  status       OfferStatus @default(ACTIVE)
+
+  // stats
+  viewCount    Int      @default(0)
+  claimCount   Int      @default(0)
+  redemptionCount Int   @default(0)
+
+  claims       OfferClaim[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([venueId, status])
+  @@index([validUntil, status])
+}
+
+enum OfferStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+model OfferClaim {
+  id         String   @id @default(cuid())
+  offerId    String
+  userId     String
+  offer      Offer    @relation(fields: [offerId], references: [id])
+  user       User     @relation(fields: [userId], references: [id])
+
+  status     ClaimStatus @default(CLAIMED)
+  claimedAt  DateTime @default(now())
+
+  redemption Redemption?
+  qrTokens   QrToken[]
+
+  @@unique([offerId, userId]) // one claim per user per offer
+  @@index([offerId])
+}
+
+enum ClaimStatus {
+  CLAIMED
+  REDEEMED
+  EXPIRED
+}
+
+model Redemption {
+  id            String   @id @default(cuid())
+  claimId       String   @unique
+  claim         OfferClaim @relation(fields: [claimId], references: [id])
+  venueId       String
+  userId        String
+
+  redeemedAt    DateTime @default(now())
+  validatedBy   String   // staff user ID or "venue_qr"
+  gpsLat        Float?
+  gpsLng        Float?
+  tokenId       String?  // which QR token was consumed
+}
+
+model QrToken {
+  id          String   @id @default(cuid())
+  claimId     String
+  claim       OfferClaim @relation(fields: [claimId], references: [id])
+
+  // signed payload: {claimId, userId, offerId, iat, exp} — sign with HMAC-SHA256
+  signedToken String   @unique
+  issuedAt    DateTime @default(now())
+  expiresAt   DateTime // issuedAt + 60 seconds
+  consumed    Boolean  @default(false)
+
+  @@index([claimId])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────
+// ANALYTICS
+// ─────────────────────────────────────────────
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  type      String   // "profile_view"|"story_view"|"offer_view"|"direction_click"|"share"|"follow"|"checkin"
+  venueId   String?
+  venue     Venue?   @relation(fields: [venueId], references: [id])
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  postId    String?
+  offerId   String?
+  sessionId String?
+  metadata  Json?    // any extra data
+  ts        DateTime @default(now())
+
+  @@index([venueId, ts])
+  @@index([type, ts])
+  @@index([ts])
+}
+
+// Nightly rollup — much faster for dashboard queries
+model VenueDailyStat {
+  id              String   @id @default(cuid())
+  venueId         String
+  date            DateTime // midnight UTC
+
+  profileViews    Int      @default(0)
+  storyViews      Int      @default(0)
+  offerViews      Int      @default(0)
+  directionClicks Int      @default(0)
+  shares          Int      @default(0)
+  follows         Int      @default(0)
+  checkins        Int      @default(0)
+  offerClaims     Int      @default(0)
+  offerRedemptions Int     @default(0)
+
+  @@unique([venueId, date])
+  @@index([venueId, date])
+}
+
+// ─────────────────────────────────────────────
+// VENUE STAFF
+// ─────────────────────────────────────────────
+
+model VenueStaff {
+  id        String   @id @default(cuid())
+  venueId   String
+  venue     Venue    @relation(fields: [venueId], references: [id])
+  userId    String
+  role      StaffRole @default(STAFF)
+  scannerPin String? // 4-digit PIN for scanner mode
+  createdAt DateTime @default(now())
+
+  @@unique([venueId, userId])
+}
+
+enum StaffRole {
+  OWNER
+  MANAGER
+  STAFF
+}
