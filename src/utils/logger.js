@@ -1,17 +1,10 @@
-// src/utils/logger.js
-// Tiny structured logger — no dependencies. Timestamps + levels.
-
-function ts() {
-  return new Date().toISOString()
-}
+const ts = () => new Date().toISOString()
 
 const logger = {
-  info: (...args) => console.log(`[INFO ${ts()}]`, ...args),
-  warn: (...args) => console.warn(`[WARN ${ts()}]`, ...args),
-  error: (...args) => console.error(`[ERROR ${ts()}]`, ...args),
-  debug: (...args) => {
-    if (process.env.NODE_ENV === 'development') console.log(`[DEBUG ${ts()}]`, ...args)
-  },
+  info:  (...a) => console.log(`[INFO  ${ts()}]`, ...a),
+  warn:  (...a) => console.warn(`[WARN  ${ts()}]`, ...a),
+  error: (...a) => console.error(`[ERROR ${ts()}]`, ...a),
+  debug: (...a) => { if (process.env.NODE_ENV !== 'production') console.log(`[DEBUG ${ts()}]`, ...a) },
 }
 
 module.exports = logger

@@ -1,93 +1,76 @@
-// src/server.js
-// What'sOn backend — Express + PostgreSQL. Railway-ready.
+require('dotenv').config()
 
 const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
-
-const { config, validate } = require('./config')
-const logger = require('./utils/logger')
 const { pool } = require('./db/pool')
-
-const venuesRouter = require('./routes/venues')
-const eventsRouter = require('./routes/events')
-const syncRouter = require('./routes/sync')
-
-validate() // warn about missing env vars
+const { migrate } = require('./db/migrate')
+const logger = require('./utils/logger')
+const { config } = require('./config')
 
 const app = express()
 
+// Required for Railway — tells Express to trust Railway's proxy
+app.set('trust proxy', 1)
+
 app.use(helmet())
-app.use(cors()) // open CORS for the MVP; restrict to your frontend domain later
+app.use(cors())
 app.use(express.json())
+app.use(rateLimit({ windowMs: 60 * 1000, max: 120 }))
 
-// Basic rate limiting
-app.use(
-  rateLimit({
-    windowMs: 60 * 1000,
-    max: 120,
-    standardHeaders: true,
-    legacyHeaders: false,
-  })
-)
-
-// ── Routes ────────────────────────────────────────────────
+// ── Routes ──────────────────────────────────────────────────
 app.get('/health', async (req, res) => {
   let db = 'down'
-  try {
-    await pool.query('SELECT 1')
-    db = 'up'
-  } catch (e) {
-    db = 'down'
-  }
-  res.json({
-    status: 'ok',
-    db,
-    time: new Date().toISOString(),
-    version: '1.0.0',
-  })
+  try { await pool.query('SELECT 1'); db = 'up' } catch (e) {}
+  res.json({ status: 'ok', db, time: new Date().toISOString(), version: '1.0.0' })
 })
 
-app.use('/venues', venuesRouter)
-app.use('/events', eventsRouter)
-app.use('/sync', syncRouter)
+app.use('/venues', require('./routes/venues'))
+app.use('/events', require('./routes/events'))
+app.use('/sync',   require('./routes/sync'))
 
 app.get('/', (req, res) => {
   res.json({
     name: "What'sOn API",
     endpoints: [
-      'GET /health',
-      'GET /venues',
-      'GET /venues/:id',
-      'GET /events',
-      'GET /events/:id',
-      'POST /sync/liverpool   (header: x-sync-secret)',
-      'POST /sync/city/:city  (header: x-sync-secret)',
-      'GET /sync/status',
-    ],
+      'GET  /health',
+      'GET  /venues',
+      'GET  /venues/:id',
+      'GET  /events',
+      'GET  /events/:id',
+      'POST /sync/liverpool',
+      'POST /sync/city/:city',
+      'GET  /sync/status',
+    ]
   })
 })
 
-// 404
 app.use((req, res) => res.status(404).json({ error: 'Not found' }))
-
-// Central error handler
 app.use((err, req, res, next) => {
-  logger.error('Request error:', err.message)
+  logger.error('Error:', err.message)
   res.status(500).json({ error: 'Internal server error' })
 })
 
-// ── Start ─────────────────────────────────────────────────
-const port = config.port
-app.listen(port, () => {
-  logger.info(`🚀 What'sOn API listening on port ${port}`)
-  logger.info(`   Environment: ${config.nodeEnv}`)
-})
+// ── Start: run migration first, then listen ─────────────────
+async function start() {
+  try {
+    logger.info('Running database migrations...')
+    await migrate()
+    logger.info('Migrations done.')
+  } catch (err) {
+    logger.error('Migration failed:', err.message)
+  }
 
-// graceful shutdown
+  const port = config.port
+  app.listen(port, () => {
+    logger.info(`🚀 What'sOn API running on port ${port}`)
+  })
+}
+
+start()
+
 process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, closing pool...')
   await pool.end()
   process.exit(0)
 })

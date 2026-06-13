@@ -1,27 +1,23 @@
-// src/db/pool.js
-// Single shared PostgreSQL connection pool.
-
 const { Pool } = require('pg')
-const { config } = require('../config')
 const logger = require('../utils/logger')
 
+// Check all possible Railway database URL variable names
+const connectionString = 
+  process.env.DATABASE_URL ||
+  process.env.DATABASE_PRIVATE_URL ||
+  process.env.DATABASE_PUBLIC_URL
+
 const pool = new Pool({
-  connectionString: config.databaseUrl,
-  // Railway Postgres requires SSL in production
-  ssl: config.nodeEnv === 'production' ? { rejectUnauthorized: false } : false,
+  connectionString,
+  ssl: { rejectUnauthorized: false },
   max: 10,
   idleTimeoutMillis: 30000,
 })
 
-pool.on('error', (err) => {
-  logger.error('Unexpected Postgres pool error:', err.message)
-})
+pool.on('error', err => logger.error('Postgres pool error:', err.message))
 
-// Helper: run a query and return rows
 async function query(text, params) {
-  const start = Date.now()
   const res = await pool.query(text, params)
-  logger.debug(`query ${Date.now() - start}ms rows=${res.rowCount}`)
   return res
 }
 
