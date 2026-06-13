@@ -28,8 +28,9 @@ app.get('/health', async (req, res) => {
 })
 
 app.use('/venues', require('./routes/venues'))
-app.use('/cities', require('./routes/cities'))
 app.use('/events', require('./routes/events'))
+app.use('/cities', require('./routes/cities'))
+app.use('/enrich', require('./routes/enrich'))
 app.use('/sync',   require('./routes/sync'))
 
 app.get('/', (req, res) => {

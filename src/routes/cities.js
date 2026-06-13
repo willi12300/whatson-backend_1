@@ -2,6 +2,7 @@ const express = require('express')
 const { query } = require('../db/pool')
 const router = express.Router()
 
+// GET /cities  — distinct cities that actually have data, with counts
 router.get('/', async (req, res, next) => {
   try {
     const { rows } = await query(`

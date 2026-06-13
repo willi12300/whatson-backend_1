@@ -30,6 +30,29 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// GET /venues/list/trending?city=Liverpool — top venues (must be before /:id)
+router.get('/list/trending', async (req, res, next) => {
+  try {
+    const { city, limit = 15 } = req.query
+    const params = []
+    let where = ['1=1']
+    if (city) { params.push(city); where.push(`v.city = $${params.length}`) }
+    params.push(parseInt(limit))
+    const { rows } = await query(`
+      SELECT v.id, v.name, v.category_slug, v.lat, v.lng, v.address, v.city,
+             v.rating, v.rating_count, v.cover_photo, v.photos,
+             COUNT(e.id) FILTER (WHERE e.status='active' AND e.starts_at >= now()) AS upcoming_events
+      FROM venues v
+      LEFT JOIN events e ON e.venue_id = v.id
+      WHERE ${where.join(' AND ')}
+      GROUP BY v.id
+      ORDER BY (COALESCE(v.rating,0) * COALESCE(v.rating_count,0)) DESC, upcoming_events DESC
+      LIMIT $${params.length}
+    `, params)
+    res.json({ venues: rows })
+  } catch (err) { next(err) }
+})
+
 router.get('/:id', async (req, res, next) => {
   try {
     const { rows } = await query(`SELECT * FROM venues WHERE id = $1`, [req.params.id])
