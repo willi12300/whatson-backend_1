@@ -38,6 +38,7 @@ app.use('/enrich', require('./routes/enrich'))
 app.use('/sync',   require('./routes/sync'))
 app.use('/plan-night', require('./routes/plan'))
 app.use('/weather', require('./routes/weather'))
+app.use('/offers', require('./routes/offers'))
 app.use('/missions', require('./routes/missions'))
 app.use('/checkins', require('./routes/checkins'))
 app.use('/profile', require('./routes/profile'))
@@ -66,6 +67,10 @@ async function start() {
       const seeded = await seedMissions()
       if (seeded.created) logger.info(`Seeded ${seeded.created} curated missions.`)
     } catch (e) { logger.error('Mission seed skipped:', e.message) }
+    try {
+      const { enrichVenueIntelligence } = require('./services/venueIntelligence')
+      await enrichVenueIntelligence(null)
+    } catch (e) { logger.error('Intelligence enrich skipped:', e.message) }
   } catch (err) {
     logger.error('Migration failed:', err.message)
   }

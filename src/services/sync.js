@@ -89,6 +89,13 @@ async function syncCity(cityPreset) {
     await query(`UPDATE events SET status='expired' WHERE ends_at < now() OR (ends_at IS NULL AND starts_at < now() - interval '6 hours')`)
     await query(`UPDATE sync_log SET status='done',finished_at=now(),venues_added=$1,venues_updated=$2,events_added=$3,events_updated=$4 WHERE id=$5`,
       [stats.venuesAdded,stats.venuesUpdated,stats.eventsAdded,stats.eventsUpdated,logId])
+
+    // Derive pricing + menu links from the freshly-synced data (best-effort)
+    try {
+      const { enrichVenueIntelligence } = require('./venueIntelligence')
+      await enrichVenueIntelligence(cityName)
+    } catch (e) { logger.error('intelligence enrich skipped:', e.message) }
+
     logger.info(`=== SYNC DONE: ${cityName} ===`, stats)
     return stats
   } catch (err) {

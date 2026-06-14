@@ -59,7 +59,16 @@ router.get('/:id', async (req, res, next) => {
     if (!rows.length) return res.status(404).json({ error: 'Venue not found' })
     const events = await query(`SELECT id,name,description,image_url,category,genre,starts_at,ends_at,is_free,min_price,ticket_url FROM events WHERE venue_id=$1 AND status='active' AND starts_at>=now() ORDER BY starts_at ASC LIMIT 20`, [req.params.id])
     const sources = await query(`SELECT provider,provider_id FROM venue_sources WHERE venue_id=$1`, [req.params.id])
-    res.json({ ...rows[0], events: events.rows, sources: sources.rows })
+    const offers = await query(`SELECT id,title,description,discount_type,estimated_value,ends_at,redeem_url FROM offers WHERE venue_id=$1 AND active=TRUE AND (ends_at IS NULL OR ends_at>=now()) ORDER BY created_at DESC`, [req.params.id])
+
+    // Busy estimate (legal heuristic)
+    let busy = null
+    try {
+      const { estimateBusy } = require('../services/busyEstimate')
+      busy = estimateBusy(rows[0], { when: new Date(), events: events.rows.map(e => ({ ...e, venue_id: parseInt(req.params.id) })) })
+    } catch (e) { /* non-fatal */ }
+
+    res.json({ ...rows[0], events: events.rows, sources: sources.rows, offers: offers.rows, busy })
   } catch (err) { next(err) }
 })
 

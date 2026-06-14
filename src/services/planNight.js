@@ -79,13 +79,28 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home, bud
   const bg = budgetGuidance(budget || {})
   const budgetBlock = bg.text ? `\nBUDGET: ${bg.text}` : ''
 
+  // If budget-conscious, surface active offers so the AI can prefer them
+  let offersBlock = ''
+  if (budget?.budget_level === 'cheap' || budget?.budget_per_person) {
+    try {
+      const { rows: offers } = await query(
+        `SELECT o.venue_id, o.title, o.estimated_value FROM offers o JOIN venues v ON v.id=o.venue_id
+         WHERE v.city=$1 AND o.active=TRUE AND (o.ends_at IS NULL OR o.ends_at>=now()) LIMIT 30`, [city]
+      )
+      if (offers.length) {
+        offersBlock = `\nACTIVE OFFERS (prefer these venues to save money): ` +
+          offers.map(o => `venue ${o.venue_id}: ${o.title}${o.estimated_value ? ' (' + o.estimated_value + ')' : ''}`).join('; ')
+      }
+    } catch (e) { /* offers optional */ }
+  }
+
   // Busy preference guidance
   let busyBlock = ''
   if (busyPref === 'avoid') busyBlock = `\nCROWDS: The user wants to AVOID packed places. Prefer venues marked busy:quiet or busy:moderate. Avoid busy:very_busy unless there's a strong reason.`
   else if (busyPref === 'lively') busyBlock = `\nCROWDS: The user wants somewhere LIVELY. Lean towards busy:busy or busy:very_busy venues with energy.`
 
   const prompt = `You are Sappo, an AI that plans real nights out in ${city}.
-${intent}${weatherBlock}${budgetBlock}${busyBlock}
+${intent}${weatherBlock}${budgetBlock}${offersBlock}${busyBlock}
 
 Build a ${stops}-stop night itinerary using ONLY venues from this list (use their exact id).
 Each venue line shows: id|name|category|rating|price(1-4, ?=unknown)|busy(quiet/moderate/busy/very_busy).
