@@ -5,6 +5,8 @@
 const { query } = require('../db/pool')
 const { generateJSON } = require('../clients/gemini')
 const { travelBetween } = require('../clients/routes')
+const { estimatePlanCost, budgetGuidance } = require('./costEstimate')
+const { estimateBusy } = require('./busyEstimate')
 const logger = require('../utils/logger')
 
 // Surprise-me mode flavour text fed into the prompt
@@ -17,7 +19,7 @@ const MODE_HINTS = {
   stag_hen:  'a big group celebration — lively bars, group-friendly spots, party atmosphere',
 }
 
-async function planNight({ city, vibe, mode, text, stops = 3, weather, home }) {
+async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref }) {
   // 1. Pull a shortlist of real venues for the city (cap to keep prompt small)
   const { rows: venues } = await query(
     `SELECT id, name, category_slug, rating, price_level, address, lat, lng
@@ -39,9 +41,15 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home }) {
   )
 
   // 3. Build the prompt
-  const venueList = venues.map(v =>
-    `${v.id}|${v.name}|${v.category_slug}|rating:${v.rating || '?'}|price:${v.price_level ?? '?'}`
-  ).join('\n')
+  // Precompute busy estimates for each venue (legal heuristics)
+  const now = new Date()
+  const busyByVenue = {}
+  for (const v of venues) busyByVenue[v.id] = estimateBusy(v, { when: now, events })
+
+  const venueList = venues.map(v => {
+    const b = busyByVenue[v.id]
+    return `${v.id}|${v.name}|${v.category_slug}|rating:${v.rating || '?'}|price:${v.price_level ?? '?'}|busy:${b.level}`
+  }).join('\n')
   const eventList = events.map(e =>
     `${e.id}|${e.name}|@${e.venue_name}|${new Date(e.starts_at).toLocaleString()}|${e.is_free ? 'free' : '£' + (e.min_price || '?')}`
   ).join('\n')
@@ -67,10 +75,20 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home }) {
     }
   }
 
-  const prompt = `You are Sappo, an AI that plans real nights out in ${city}.
-${intent}${weatherBlock}
+  // Budget guidance
+  const bg = budgetGuidance(budget || {})
+  const budgetBlock = bg.text ? `\nBUDGET: ${bg.text}` : ''
 
-Build a ${stops}-stop night itinerary using ONLY venues from this list (use their exact id):
+  // Busy preference guidance
+  let busyBlock = ''
+  if (busyPref === 'avoid') busyBlock = `\nCROWDS: The user wants to AVOID packed places. Prefer venues marked busy:quiet or busy:moderate. Avoid busy:very_busy unless there's a strong reason.`
+  else if (busyPref === 'lively') busyBlock = `\nCROWDS: The user wants somewhere LIVELY. Lean towards busy:busy or busy:very_busy venues with energy.`
+
+  const prompt = `You are Sappo, an AI that plans real nights out in ${city}.
+${intent}${weatherBlock}${budgetBlock}${busyBlock}
+
+Build a ${stops}-stop night itinerary using ONLY venues from this list (use their exact id).
+Each venue line shows: id|name|category|rating|price(1-4, ?=unknown)|busy(quiet/moderate/busy/very_busy).
 VENUES:
 ${venueList}
 
@@ -84,9 +102,10 @@ Respond with JSON only in this exact shape:
   "stops": [
     { "venueId": "<id from list>", "order": 1, "label": "First stop", "why": "one short sentence why this place fits" }
   ],
+  "reasoning": "one or two sentences explaining your choices like a concierge would, e.g. mention budget kept low, avoided busy spots, included a free stop",
   "tip": "one short insider tip for the night"
 }
-Rules: pick ${stops} stops, order them as a sensible night progression (e.g. food/drinks first, livelier later). Only use venueIds that appear in the list. Keep text punchy and fun. Try to keep consecutive stops reasonably close together so people aren't crossing the whole city between each one.`
+Rules: pick ${stops} stops, order them as a sensible night progression (e.g. food/drinks first, livelier later). Only use venueIds that appear in the list. Respect the budget and crowd preferences above. Keep text punchy and fun. Try to keep consecutive stops reasonably close together so people aren't crossing the whole city between each one.`
 
   // 4. Ask Gemini
   const ai = await generateJSON(prompt, { temperature: mode === 'chaos' ? 1.0 : 0.9 })
@@ -97,11 +116,19 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
 
   // 5. Map venueIds back to real venue records (guard against hallucinated ids)
   const byId = Object.fromEntries(venues.map(v => [String(v.id), v]))
+  const eventByVenue = {}
+  for (const e of events) { if (!eventByVenue[e.venue_id]) eventByVenue[e.venue_id] = e }
   const stopsOut = (ai.stops || [])
     .map(s => {
       const v = byId[String(s.venueId)]
       if (!v) return null
-      return { ...v, order: s.order, label: s.label, why: s.why }
+      const busy = busyByVenue[v.id] || estimateBusy(v, { when: now, events })
+      const ev = eventByVenue[v.id]
+      return {
+        ...v, order: s.order, label: s.label, why: s.why,
+        busy,
+        eventPrice: ev && !ev.is_free ? (ev.min_price || null) : (ev?.is_free ? 0 : null),
+      }
     })
     .filter(Boolean)
 
@@ -130,10 +157,22 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
     } catch (e) { /* ignore */ }
   }
 
+  // Estimate per-person cost (transport: rough taxi share if legs exist)
+  let transportPerPerson = 0
+  for (const leg of legs) {
+    if (leg?.driving?.distanceMeters) {
+      // very rough UK taxi: £3 base + £1.50/km, split 2 ways
+      transportPerPerson += (3 + (leg.driving.distanceMeters / 1000) * 1.5) / 2
+    }
+  }
+  const cost = estimatePlanCost(stopsOut, { transportPerPerson: Math.round(transportPerPerson) })
+
   return {
     title: ai.title || 'Your night out',
     vibe: ai.vibe || '',
     tip: ai.tip || '',
+    reasoning: ai.reasoning || null,
+    cost,
     stops: stopsOut,
     weatherNote: weather?.planningHint?.note ? `Weather considered: ${weather.planningHint.note}.` : null,
     gettingHome,
