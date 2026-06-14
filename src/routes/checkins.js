@@ -28,22 +28,37 @@ async function awardXP(deviceId, amount) {
 // POST /checkins  { deviceId, venueId, lat?, lng? }
 router.post('/', async (req, res, next) => {
   try {
-    const { deviceId, venueId, lat, lng } = req.body || {}
+    const { deviceId, venueId, lat, lng, accuracy } = req.body || {}
     if (!deviceId || !venueId) return res.status(400).json({ error: 'deviceId and venueId required' })
 
-    // GPS verification if coords provided
-    let gpsVerified = false
-    if (lat != null && lng != null) {
-      const { rows } = await query(`SELECT lat, lng, name FROM venues WHERE id=$1`, [venueId])
-      if (rows.length) {
-        const d = dist(lat, lng, rows[0].lat, rows[0].lng)
-        gpsVerified = d <= 250  // within 250m counts
-      }
+    // Location is REQUIRED — no coords, no check-in.
+    if (lat == null || lng == null) {
+      return res.status(400).json({ error: 'location_required', message: 'Location is needed to check in. Please allow location access.' })
     }
 
+    // Look up the venue and measure how far the user is.
+    const { rows } = await query(`SELECT lat, lng, name FROM venues WHERE id=$1`, [venueId])
+    if (!rows.length) return res.status(404).json({ error: 'venue_not_found' })
+
+    const CHECKIN_RADIUS_M = 50    // must be within 50m of the venue
+    const d = dist(lat, lng, rows[0].lat, rows[0].lng)
+
+    // Reject if too far away. Allow a little slack for GPS inaccuracy (capped small
+    // so it can't swamp the tighter radius).
+    const slack = Math.min(accuracy || 0, 25)   // phone GPS accuracy, capped at 25m
+    if (d > CHECKIN_RADIUS_M + slack) {
+      return res.status(403).json({
+        error: 'too_far',
+        message: `You're too far from ${rows[0].name} to check in. Get within ${CHECKIN_RADIUS_M}m.`,
+        distance: Math.round(d),
+        required: CHECKIN_RADIUS_M,
+      })
+    }
+
+    // Passed — this is a verified, on-location check-in.
     await query(
-      `INSERT INTO check_ins (device_id, venue_id, lat, lng, gps_verified) VALUES ($1,$2,$3,$4,$5)`,
-      [deviceId, venueId, lat ?? null, lng ?? null, gpsVerified]
+      `INSERT INTO check_ins (device_id, venue_id, lat, lng, gps_verified) VALUES ($1,$2,$3,$4,TRUE)`,
+      [deviceId, venueId, lat, lng]
     )
     const { xp, level } = await awardXP(deviceId, XP_PER_CHECKIN)
 
@@ -53,7 +68,7 @@ router.post('/', async (req, res, next) => {
       await query(`INSERT INTO badges (device_id, badge_key, label) VALUES ($1,'first_checkin','First Steps') ON CONFLICT DO NOTHING`, [deviceId])
     }
 
-    res.json({ ok: true, gpsVerified, xpAwarded: XP_PER_CHECKIN, xp, level })
+    res.json({ ok: true, gpsVerified: true, distance: Math.round(d), xpAwarded: XP_PER_CHECKIN, xp, level })
   } catch (err) { next(err) }
 })
 
