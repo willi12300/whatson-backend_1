@@ -16,7 +16,7 @@ const MODE_HINTS = {
   stag_hen:  'a big group celebration — lively bars, group-friendly spots, party atmosphere',
 }
 
-async function planNight({ city, vibe, mode, text, stops = 3 }) {
+async function planNight({ city, vibe, mode, text, stops = 3, weather }) {
   // 1. Pull a shortlist of real venues for the city (cap to keep prompt small)
   const { rows: venues } = await query(
     `SELECT id, name, category_slug, rating, price_level, address
@@ -53,8 +53,21 @@ async function planNight({ city, vibe, mode, text, stops = 3 }) {
         ? `The user wants a ${vibe} night.`
         : 'The user wants a fun night out.'
 
+  // Weather guidance — silently bias the plan based on conditions
+  let weatherBlock = ''
+  if (weather?.planningHint) {
+    const h = weather.planningHint
+    if (h.mode === 'indoor') {
+      weatherBlock = `\nWEATHER: ${h.temp}°C, ${h.condition}. Because of the weather, PREFER indoor venues — pubs, restaurants, bars, covered markets, museums, live music venues. Avoid parks, viewpoints, beer gardens and exposed outdoor spots.`
+    } else if (h.mode === 'outdoor') {
+      weatherBlock = `\nWEATHER: ${h.temp}°C, ${h.condition}. The weather is lovely — feel free to include outdoor spots like parks, viewpoints, beer gardens or outdoor food markets where they fit.`
+    } else {
+      weatherBlock = `\nWEATHER: ${h.temp}°C, ${h.condition}. Mix indoor and outdoor as suits the night.`
+    }
+  }
+
   const prompt = `You are Sappo, an AI that plans real nights out in ${city}.
-${intent}
+${intent}${weatherBlock}
 
 Build a ${stops}-stop night itinerary using ONLY venues from this list (use their exact id):
 VENUES:
@@ -98,6 +111,7 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
     vibe: ai.vibe || '',
     tip: ai.tip || '',
     stops: stopsOut,
+    weatherNote: weather?.planningHint?.note ? `Weather considered: ${weather.planningHint.note}.` : null,
     source: 'ai',
   }
 }

@@ -37,6 +37,7 @@ app.use('/cities', require('./routes/cities'))
 app.use('/enrich', require('./routes/enrich'))
 app.use('/sync',   require('./routes/sync'))
 app.use('/plan-night', require('./routes/plan'))
+app.use('/weather', require('./routes/weather'))
 app.use('/missions', require('./routes/missions'))
 app.use('/checkins', require('./routes/checkins'))
 app.use('/profile', require('./routes/profile'))
@@ -60,10 +61,15 @@ async function start() {
     logger.info('Running database migrations...')
     await migrate()
     logger.info('Migrations done.')
+    try {
+      const { seedMissions } = require('./services/seedMissions')
+      const seeded = await seedMissions()
+      if (seeded.created) logger.info(`Seeded ${seeded.created} curated missions.`)
+    } catch (e) { logger.error('Mission seed skipped:', e.message) }
   } catch (err) {
     logger.error('Migration failed:', err.message)
   }
-  app.listen(config.port, () => logger.info(`🚀 What'sOn API running on port ${config.port}`))
+  app.listen(config.port, () => logger.info(`🚀 SAPPO API running on port ${config.port}`))
 }
 
 start()
