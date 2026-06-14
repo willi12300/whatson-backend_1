@@ -27,6 +27,10 @@ app.get('/health', async (req, res) => {
   res.json({ status: 'ok', db, time: new Date().toISOString(), version: '1.0.0' })
 })
 
+// Attach req.userId from Bearer token when present (non-blocking)
+app.use(require('./services/auth').withAuth)
+
+app.use('/auth',   require('./routes/auth'))
 app.use('/venues', require('./routes/venues'))
 app.use('/events', require('./routes/events'))
 app.use('/cities', require('./routes/cities'))
