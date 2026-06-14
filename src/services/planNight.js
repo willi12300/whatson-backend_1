@@ -19,21 +19,46 @@ const MODE_HINTS = {
   stag_hen:  'a big group celebration — lively bars, group-friendly spots, party atmosphere',
 }
 
-async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref }) {
-  // 1. Pull a shortlist of real venues for the city (cap to keep prompt small)
-  const { rows: venues } = await query(
-    `SELECT id, name, category_slug, rating, price_level, address, lat, lng
+async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng }) {
+  // 1. Pull a wider shortlist, then rank by relevance to the request.
+  const { rows: allVenues } = await query(
+    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
      FROM venues
      WHERE city = $1 AND name IS NOT NULL
      ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
-     LIMIT 60`,
+     LIMIT 140`,
     [city]
   )
-  if (!venues.length) return { error: 'no_venues' }
+  if (!allVenues.length) return { error: 'no_venues' }
+
+  // Score each venue for relevance to the user's actual request.
+  const wantCats = new Set(categories || [])
+  const scored = allVenues.map(v => {
+    let score = 0
+    // category match is the strongest signal
+    if (wantCats.size && wantCats.has(v.category_slug)) score += 50
+    // rating quality (capped influence)
+    score += Math.min((v.rating || 0) * 2, 10)
+    score += Math.min((v.rating_count || 0) / 200, 5)
+    // budget fit
+    if (budget?.budget_level === 'cheap' && v.price_level && v.price_level <= 2) score += 8
+    if (budget?.budget_level === 'premium' && v.price_level && v.price_level >= 3) score += 6
+    // distance (if we have a start point) — closer is better
+    if (lat != null && lng != null && v.lat != null) {
+      const d = haversineKm(lat, lng, v.lat, v.lng)
+      score += Math.max(0, 8 - d)  // within ~8km gets a bonus that decays
+    }
+    // a little randomness so repeated plans vary among good matches
+    score += Math.random() * 6
+    return { ...v, _score: score }
+  }).sort((a, b) => b._score - a._score)
+
+  // Keep the top relevant venues for the prompt (ensures category matches lead).
+  const venues = scored.slice(0, 60)
 
   // 2. Pull a few upcoming events too
   const { rows: events } = await query(
-    `SELECT e.id, e.name, e.starts_at, e.is_free, e.min_price, v.name AS venue_name
+    `SELECT e.id, e.name, e.starts_at, e.is_free, e.min_price, v.name AS venue_name, e.venue_id
      FROM events e JOIN venues v ON v.id = e.venue_id
      WHERE v.city = $1 AND e.status='active' AND e.starts_at >= now()
      ORDER BY e.starts_at ASC LIMIT 20`,
@@ -61,6 +86,13 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home, bud
       : vibe
         ? `The user wants a ${vibe} night.`
         : 'The user wants a fun night out.'
+
+  // Tell the AI which venue categories the user actually asked for
+  let catBlock = ''
+  if (categories && categories.length) {
+    const labels = { restaurant: 'food/restaurants', cafe: 'cafés', bar: 'bars/cocktails', pub: 'pubs', nightclub: 'clubs', music_venue: 'live music/karaoke', comedy: 'comedy' }
+    catBlock = `\nThe user specifically wants: ${categories.map(c => labels[c] || c).join(', ')}. Make sure the plan includes these where possible.`
+  }
 
   // Weather guidance — silently bias the plan based on conditions
   let weatherBlock = ''
@@ -100,7 +132,7 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home, bud
   else if (busyPref === 'lively') busyBlock = `\nCROWDS: The user wants somewhere LIVELY. Lean towards busy:busy or busy:very_busy venues with energy.`
 
   const prompt = `You are Sappo, an AI that plans real nights out in ${city}.
-${intent}${weatherBlock}${budgetBlock}${offersBlock}${busyBlock}
+${intent}${catBlock}${weatherBlock}${budgetBlock}${offersBlock}${busyBlock}
 
 Build a ${stops}-stop night itinerary using ONLY venues from this list (use their exact id).
 Each venue line shows: id|name|category|rating|price(1-4, ?=unknown)|busy(quiet/moderate/busy/very_busy).
@@ -206,3 +238,10 @@ function fallbackPlan(city, venues, vibe) {
 }
 
 module.exports = { planNight, MODE_HINTS }
+
+function haversineKm(a, b, c, d) {
+  const R = 6371, r = x => x * Math.PI / 180
+  const dLat = r(c - a), dLng = r(d - b)
+  const h = Math.sin(dLat/2)**2 + Math.cos(r(a))*Math.cos(r(c))*Math.sin(dLng/2)**2
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
