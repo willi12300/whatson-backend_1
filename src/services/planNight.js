@@ -4,6 +4,7 @@
 
 const { query } = require('../db/pool')
 const { generateJSON } = require('../clients/gemini')
+const { travelBetween } = require('../clients/routes')
 const logger = require('../utils/logger')
 
 // Surprise-me mode flavour text fed into the prompt
@@ -16,10 +17,10 @@ const MODE_HINTS = {
   stag_hen:  'a big group celebration — lively bars, group-friendly spots, party atmosphere',
 }
 
-async function planNight({ city, vibe, mode, text, stops = 3, weather }) {
+async function planNight({ city, vibe, mode, text, stops = 3, weather, home }) {
   // 1. Pull a shortlist of real venues for the city (cap to keep prompt small)
   const { rows: venues } = await query(
-    `SELECT id, name, category_slug, rating, price_level, address
+    `SELECT id, name, category_slug, rating, price_level, address, lat, lng
      FROM venues
      WHERE city = $1 AND name IS NOT NULL
      ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
@@ -85,7 +86,7 @@ Respond with JSON only in this exact shape:
   ],
   "tip": "one short insider tip for the night"
 }
-Rules: pick ${stops} stops, order them as a sensible night progression (e.g. food/drinks first, livelier later). Only use venueIds that appear in the list. Keep text punchy and fun.`
+Rules: pick ${stops} stops, order them as a sensible night progression (e.g. food/drinks first, livelier later). Only use venueIds that appear in the list. Keep text punchy and fun. Try to keep consecutive stops reasonably close together so people aren't crossing the whole city between each one.`
 
   // 4. Ask Gemini
   const ai = await generateJSON(prompt, { temperature: mode === 'chaos' ? 1.0 : 0.9 })
@@ -106,12 +107,36 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
 
   if (!stopsOut.length) return fallbackPlan(city, venues, vibe || mode)
 
+  // Compute travel time between consecutive stops (best-effort; null if no key).
+  const legs = []
+  for (let i = 0; i < stopsOut.length - 1; i++) {
+    const from = stopsOut[i], to = stopsOut[i + 1]
+    let leg = null
+    try {
+      const t = await travelBetween({ lat: from.lat, lng: from.lng }, { lat: to.lat, lng: to.lng })
+      if (t) leg = t
+    } catch (e) { /* ignore, leave null */ }
+    legs.push(leg)
+    stopsOut[i].travelToNext = leg
+  }
+
+  // "Getting home" — if the user gave a home location, compute the journey from the last stop.
+  let gettingHome = null
+  if (home?.lat != null && home?.lng != null && stopsOut.length) {
+    const last = stopsOut[stopsOut.length - 1]
+    try {
+      const t = await travelBetween({ lat: last.lat, lng: last.lng }, { lat: home.lat, lng: home.lng })
+      if (t) gettingHome = { from: last.name, travel: t, homeLabel: home.label || 'home' }
+    } catch (e) { /* ignore */ }
+  }
+
   return {
     title: ai.title || 'Your night out',
     vibe: ai.vibe || '',
     tip: ai.tip || '',
     stops: stopsOut,
     weatherNote: weather?.planningHint?.note ? `Weather considered: ${weather.planningHint.note}.` : null,
+    gettingHome,
     source: 'ai',
   }
 }
