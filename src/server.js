@@ -32,6 +32,9 @@ app.use('/events', require('./routes/events'))
 app.use('/cities', require('./routes/cities'))
 app.use('/enrich', require('./routes/enrich'))
 app.use('/sync',   require('./routes/sync'))
+app.use('/plan-night', require('./routes/plan'))
+app.use('/checkins', require('./routes/checkins'))
+app.use('/profile', require('./routes/profile'))
 
 app.get('/', (req, res) => {
   res.json({
