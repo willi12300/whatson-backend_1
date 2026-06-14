@@ -37,6 +37,7 @@ app.use('/cities', require('./routes/cities'))
 app.use('/enrich', require('./routes/enrich'))
 app.use('/sync',   require('./routes/sync'))
 app.use('/plan-night', require('./routes/plan'))
+app.use('/missions', require('./routes/missions'))
 app.use('/checkins', require('./routes/checkins'))
 app.use('/profile', require('./routes/profile'))
 
