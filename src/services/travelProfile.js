@@ -41,6 +41,9 @@ const SIGNALS = {
   date_night:             { romantic: 4 },
   family_plan:            { family: 4 },
   budget_request:         { budget: 3 },
+  // roulette
+  roulette_accept:        { explorer: 4 },   // they went with Sappo's pick
+  roulette_spin_again:    { explorer: -1 },  // weak negative — pick wasn't quite right
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -94,7 +97,7 @@ async function applySignal({ userId, deviceId }, signalName, { categories = [] }
   const vals = []
   let i = 1
   for (const a of ARCHETYPES) {
-    if (scoreDeltas[a.key]) { sets.push(`${a.col} = ${a.col} + $${i++}`); vals.push(scoreDeltas[a.key]) }
+    if (scoreDeltas[a.key]) { sets.push(`${a.col} = GREATEST(0, ${a.col} + $${i++})`); vals.push(scoreDeltas[a.key]) }
   }
   for (const t of TOLERANCE_COLS) {
     if (tolDeltas[t]) { sets.push(`${t} = GREATEST(0, LEAST(100, ${t} + $${i++}))`); vals.push(tolDeltas[t]) }
