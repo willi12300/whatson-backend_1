@@ -43,6 +43,7 @@ app.use('/offers', require('./routes/offers'))
 app.use('/missions', require('./routes/missions'))
 app.use('/checkins', require('./routes/checkins'))
 app.use('/profile', require('./routes/profile'))
+app.use('/profile', require('./routes/travelProfile'))
 
 app.get('/', (req, res) => {
   res.json({

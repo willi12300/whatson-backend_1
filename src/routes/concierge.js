@@ -6,6 +6,7 @@ const { planNight } = require('../services/planNight')
 const { getWeather } = require('../clients/weather')
 const { query } = require('../db/pool')
 const { findPlace } = require('../clients/google')
+const { getProfile, plannerBoosts } = require('../services/travelProfile')
 const logger = require('../utils/logger')
 const router = express.Router()
 
@@ -49,8 +50,18 @@ VERY IMPORTANT — how to trigger a plan:
 //   history: full prior thread [{ role:'user'|'sappo', text }]
 router.post('/', async (req, res, next) => {
   try {
-    const { message, history = [], selectedCity, lat, lng } = req.body || {}
+    const { message, history = [], selectedCity, lat, lng, deviceId } = req.body || {}
     if (!message) return res.status(400).json({ error: 'message required' })
+
+    // Load the traveller profile (by user if logged in, else device) for personalisation.
+    let profileKey = req.userId ? { userId: req.userId } : (deviceId ? { deviceId } : null)
+    let boosts = null
+    if (profileKey) {
+      try {
+        const profile = await getProfile(profileKey)
+        boosts = plannerBoosts(profile)
+      } catch (e) { logger.error('[concierge] profile load failed:', e.message) }
+    }
 
     // Build the full conversation for Gemini (full history = memory = no loops).
     const thread = [...history, { role: 'user', text: message }]
@@ -76,7 +87,7 @@ router.post('/', async (req, res, next) => {
       if (!userGaveSomething) {
         return res.json({ type: 'reply', say: "Hey! Where are you and what are you into — food, history, music, views, hidden gems?", geminiDown: true })
       }
-      return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true, thread })
+      return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true, thread, boosts })
     }
 
     // GEMINI decides when to plan, by ending with [[PLAN]]. This is the only reliable
@@ -98,7 +109,7 @@ router.post('/', async (req, res, next) => {
     const handoff = (cleanReply && cleanReply.length <= 140 && cleanReply.split(/\s+/).length <= 26)
       ? cleanReply
       : "Love it — give me two secs to sort you something cracking…"
-    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: handoff, thread })
+    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: handoff, thread, boosts })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
@@ -122,7 +133,7 @@ function mergeIntent(thread, extracted = {}) {
   return merged
 }
 
-async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown, thread }) {
+async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown, thread, boosts }) {
   const loc = resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
   logger.info('[concierge] planning (hybrid)', JSON.stringify({ city: loc.cityName, categories: intent.categories, raw: intent.raw?.slice(0, 60) }))
 
@@ -161,9 +172,24 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
     }
   } catch (e) { logger.error('[concierge] venue fetch failed:', e.message) }
 
+  // 1b. PERSONALISATION: re-rank the shortlist using the traveller profile boosts,
+  // so the venues we offer Gemini lean towards what this user enjoys.
+  if (boosts && boosts.categoryBoost && dbVenues.length) {
+    dbVenues = dbVenues
+      .map(v => {
+        let s = (v.rating || 0) * Math.min(v.rating_count || 0, 500)
+        s += (boosts.categoryBoost[v.category_slug] || 0) * 1000   // boost preferred categories
+        if (boosts.preferCheap && v.price_level && v.price_level <= 2) s += 2000
+        if (boosts.preferCheap && v.price_level >= 3) s -= 1500
+        return { ...v, _pscore: s }
+      })
+      .sort((a, b) => b._pscore - a._pscore)
+  }
+
   // 2. Ask Gemini to build a hybrid itinerary (prefer DB venues, fill gaps with real places).
   const conversation = (thread || []).slice(-12)
-  const itin = geminiDown ? null : await buildItinerary(SYSTEM, conversation, dbVenues, { weather })
+  const prefNote = buildPrefNote(boosts)
+  const itin = geminiDown ? null : await buildItinerary(SYSTEM, conversation, dbVenues, { weather, prefNote })
 
   // 3. If the hybrid build worked, enrich each stop with verified data, coords, photo + map link.
   if (itin && Array.isArray(itin.stops) && itin.stops.length) {
@@ -290,4 +316,19 @@ function haversineKm(a, b, c, d) {
   const dLat = r(c - a), dLng = r(d - b)
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(dLng / 2) ** 2
   return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+// Turn profile boosts into a short natural note for Gemini (gentle personalisation).
+function buildPrefNote(boosts) {
+  if (!boosts) return ''
+  const bits = []
+  if (boosts.preferHidden) bits.push('they love hidden gems and local spots over obvious tourist traps')
+  if (boosts.preferCheap) bits.push('they prefer good value / cheaper options')
+  if (boosts.preferQuiet) bits.push('they prefer quieter places over busy crowds')
+  if (boosts.preferLessWalking) bits.push('keep walking distances short')
+  // top boosted categories
+  const top = Object.entries(boosts.categoryBoost || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0])
+  if (top.length) bits.push('they tend to enjoy: ' + top.join(', '))
+  if (!bits.length) return ''
+  return `\nThis traveller's known preferences (personalise gently, don't mention these notes): ${bits.join('; ')}.`
 }

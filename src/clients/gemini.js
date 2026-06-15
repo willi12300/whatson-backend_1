@@ -50,7 +50,7 @@ module.exports = { generateJSON, chatJSON, chatText, buildItinerary, MODEL }
  * and is told to PREFER our venues but fill gaps with real places it knows (with
  * addresses). Returns { title, summary, stops:[{name, address, why, verified, dbId}] }.
  */
-async function buildItinerary(system, conversation, dbVenues, { temperature = 0.8, weather = null } = {}) {
+async function buildItinerary(system, conversation, dbVenues, { temperature = 0.8, weather = null, prefNote = '' } = {}) {
   if (!KEY()) return null
   try {
     const venueLines = dbVenues.map(v =>
@@ -72,7 +72,7 @@ Build a 3-stop itinerary that matches what the user ACTUALLY asked for (match th
 - If our database doesn't have what they want (e.g. a specific food, live music, a skatepark), use a REAL well-known place you know in this city, with its actual address. Never invent fake places.
 - Respect their time and constraints (e.g. if they've two hours near a station, keep it tight and close).
 - Every stop MUST have a real address.
-- Order the stops so they flow well.
+- Order the stops so they flow well.${prefNote}
 
 Reply ONLY with JSON:
 {
