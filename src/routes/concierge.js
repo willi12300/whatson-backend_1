@@ -98,19 +98,24 @@ async function buildPlan(loc, state, weather, ack, res) {
 //   askedKeys: list of fields already asked (to enforce never-ask-twice + cap)
 router.post('/', async (req, res, next) => {
   try {
-    const { message, state: prevState, askedKey, askedKeys = [], selectedCity, lat, lng } = req.body || {}
-    if (!message) return res.status(400).json({ error: 'message required' })
+    const { message, state: prevState, askedKey, askedKeys = [], selectedCity, lat, lng, confirm } = req.body || {}
+    if (!message && confirm !== 'get_plan') return res.status(400).json({ error: 'message required' })
 
     let state = mergeState(emptyState(), prevState || {})
-    state._lastMessage = message
+    state._lastMessage = message || ''
+    // carry the "user chose to add more" flag forward (mergeState drops _ fields)
+    if (prevState?._confirmedAddMore) state._confirmedAddMore = true
+    // when the user taps "Add more", mark it so the NEXT message plans
+    if (confirm === 'add_more') state._confirmedAddMore = true
 
     // 1. If this message is an answer to a question we asked, map it directly.
-    if (askedKey) applyAnswer(state, askedKey, message)
+    if (askedKey && message) applyAnswer(state, askedKey, message)
 
     // 2. Extract structured info from the message (Gemini + keyword fallback).
     const loc0 = resolveLocation({ lat, lng, selectedCity, promptCity: state.cityMention })
-    const { extracted, ack } = await extractState(message, state, loc0.cityName)
+    const { extracted, ack } = message ? await extractState(message, state, loc0.cityName) : { extracted: {}, ack: null }
     state = mergeState(state, extracted)
+    if (prevState?._confirmedAddMore) state._confirmedAddMore = true  // re-assert after merge
 
     // 3. Resolve location with any newly-mentioned city.
     const loc = resolveLocation({ lat, lng, selectedCity, promptCity: state.cityMention })
@@ -118,12 +123,39 @@ router.post('/', async (req, res, next) => {
     logger.info('[concierge] location', JSON.stringify(loc.log))
     logger.info('[concierge] state', JSON.stringify(slim(state)))
 
-    // 4. Decide deterministically: ask or plan.
+    // ── Confirmation gate handling ──
+    // (confirm was already read from req.body at the top)
+
+    // "Get the plan" → plan immediately.
+    if (confirm === 'get_plan') {
+      const weather = await fetchWeather(loc)
+      return await buildPlan(loc, state, weather, ack, res)
+    }
+
+    // "Add more" tap → invite ONE more message, then we'll plan on their reply.
+    if (confirm === 'add_more') {
+      state._confirmedAddMore = true
+      return res.json({
+        type: 'reply',
+        action: 'add_more',
+        reply: "Go on then — what else?",
+        options: [],
+        state,
+      })
+    }
+
+    // If they already tapped "Add more" last turn, THIS message is the extra detail → plan now.
+    if (state._confirmedAddMore) {
+      const weather = await fetchWeather(loc)
+      return await buildPlan(loc, state, weather, ack, res)
+    }
+
+    // 4. Decide: ask a missing required field, OR move to the confirmation gate.
     const missing = missingRequired(state).filter(k => !askedKeys.includes(k))
     const canAskMore = askedKeys.length < 2
-
     logger.info('[concierge] decision', JSON.stringify({ missing, askedKeys, canAskMore }))
 
+    // Still gathering required info (within the 2-question cap)?
     if (missing.length && canAskMore) {
       const ask = QUESTIONS[missing[0]]
       return res.json({
@@ -137,9 +169,14 @@ router.post('/', async (req, res, next) => {
       })
     }
 
-    // 5. Enough info (or hit the cap) → plan now.
-    const weather = await fetchWeather(loc)
-    return await buildPlan(loc, state, weather, ack, res)
+    // 5. Minimum info collected → show the confirmation gate (always, exactly once).
+    return res.json({
+      type: 'reply',
+      action: 'confirm',
+      reply: ack ? `${ack} Anything else you want to add, or shall I get the plan together?` : "Anything else you want to add, or shall I get the plan together?",
+      options: ['Add more', 'Get the plan'],
+      state,
+    })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
