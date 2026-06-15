@@ -20,41 +20,67 @@ const MODE_HINTS = {
 }
 
 async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng }) {
-  // 1. Pull a wider shortlist, then rank by relevance to the request.
+  // 1. Pull venues for this city.
   const { rows: allVenues } = await query(
     `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
      FROM venues
      WHERE city = $1 AND name IS NOT NULL
      ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
-     LIMIT 140`,
+     LIMIT 200`,
     [city]
   )
   if (!allVenues.length) return { error: 'no_venues' }
 
-  // Score each venue for relevance to the user's actual request.
   const wantCats = new Set(categories || [])
+  const kw = (text || '').toLowerCase()
+
+  // Score each venue for relevance to what the user ACTUALLY asked for.
   const scored = allVenues.map(v => {
     let score = 0
-    // category match is the strongest signal
-    if (wantCats.size && wantCats.has(v.category_slug)) score += 50
-    // rating quality (capped influence)
-    score += Math.min((v.rating || 0) * 2, 10)
-    score += Math.min((v.rating_count || 0) / 200, 5)
-    // budget fit
-    if (budget?.budget_level === 'cheap' && v.price_level && v.price_level <= 2) score += 8
-    if (budget?.budget_level === 'premium' && v.price_level && v.price_level >= 3) score += 6
-    // distance (if we have a start point) — closer is better
+    const reasons = []
+    // CATEGORY: strong signal both ways
+    if (wantCats.size) {
+      if (wantCats.has(v.category_slug)) { score += 60; reasons.push('matches what you asked for') }
+      else { score -= 40 }   // strong penalty for wrong category — keeps the plan on-topic
+    }
+    // KEYWORD: venue name contains a word from the request (e.g. "burger" → "Burger & Beyond")
+    const nameWords = (v.name || '').toLowerCase()
+    const reqWords = kw.match(/[a-z]{4,}/g) || []
+    const stop = new Set(['some','good','want','place','night','nice','really','something','tonight','today','with','near','from','that','this','plan'])
+    for (const w of reqWords) { if (!stop.has(w) && nameWords.includes(w)) { score += 25; reasons.push('name fits the request') } }
+    // QUALITY
+    score += Math.min((v.rating || 0) * 3, 15)
+    score += Math.min((v.rating_count || 0) / 250, 5)
+    // BUDGET
+    if (budget?.budget_level === 'cheap') {
+      if (v.price_level && v.price_level <= 2) { score += 10; reasons.push('budget-friendly') }
+      else if (v.price_level >= 3) score -= 12
+    }
+    if (budget?.budget_level === 'premium' && v.price_level >= 3) { score += 8; reasons.push('upmarket') }
+    // DISTANCE
     if (lat != null && lng != null && v.lat != null) {
       const d = haversineKm(lat, lng, v.lat, v.lng)
-      score += Math.max(0, 8 - d)  // within ~8km gets a bonus that decays
+      if (d <= 1.5) { score += 10; reasons.push('close by') }
+      else if (d <= 4) score += 5
+      else if (d > 12) score -= 10
     }
-    // a little randomness so repeated plans vary among good matches
-    score += Math.random() * 6
-    return { ...v, _score: score }
+    // small jitter for variety among near-ties (much smaller than before)
+    score += Math.random() * 3
+    return { ...v, _score: score, _reasons: reasons }
   }).sort((a, b) => b._score - a._score)
 
-  // Keep the top relevant venues for the prompt (ensures category matches lead).
-  const venues = scored.slice(0, 60)
+  // If the user asked for specific categories, DROP anything that doesn't match
+  // (so a "burgers" request can't return a cocktail bar). Keep a small relevant set.
+  let relevant = scored
+  if (wantCats.size) {
+    const matching = scored.filter(v => wantCats.has(v.category_slug))
+    // use matches if we have a reasonable number; otherwise fall back to top scored
+    relevant = matching.length >= stops ? matching : scored.filter(v => v._score > 0)
+  }
+
+  // Hand Gemini a TIGHT, relevant shortlist (not 60 random venues).
+  const venues = relevant.slice(0, 24)
+
 
   // 2. Pull a few upcoming events too
   const { rows: events } = await query(

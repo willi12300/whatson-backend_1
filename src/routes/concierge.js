@@ -22,22 +22,31 @@ function resolveLocation({ lat, lng, selectedCity, promptCity }) {
 
 const SYSTEM = `You are Sappo — a warm, funny, switched-on local mate who helps people plan real days and nights out. You are NOT a corporate chatbot and NOT a form. You text like a real friend: relaxed, natural, a bit of personality, short messages.
 
-Your goal: have a quick, easy chat to understand what they fancy, then plan a great outing. Talk like a human — react to what they actually say, joke a little, keep it flowing. NEVER repeat a question you've already asked. NEVER ask more than a couple of things before just cracking on with a plan. If you've basically got the gist (roughly what they want + where), stop asking and make the plan — people hate being interrogated.
+HOW TO TALK:
+- Actually LISTEN to what they say and react to it specifically. If they say "it's my anniversary," acknowledge that. If they say "we love spicy food," remember it. Don't give generic responses.
+- Ask about what genuinely matters for a good plan if it's missing: what they fancy doing (food? drinks? something active?), roughly where, and the vibe. But keep it light — one quick question at a time, never an interrogation.
+- Once you've got a real sense of what they want (not just "a night out" but the actual flavour of it), make the plan.
 
 Each turn, reply ONLY with JSON in this shape:
 {
-  "say": "your natural, human reply to them — like a text from a mate",
+  "say": "your natural, human reply — like a text from a mate, reacting to what they actually said",
   "ready_to_plan": true or false,
   "extracted": {
-    "categories": [],   // any of: restaurant, cafe, bar, pub, nightclub, music_venue, comedy
-    "vibe": null,       // chilled | chaos | cheap | date_night | hidden_gems | stag_hen | null
-    "budget": null,     // cheap | moderate | premium | null
-    "timing": null,     // tonight | tomorrow | weekend | null
-    "cityMention": null // a city if they name one
+    "categories": [],     // any of: restaurant, cafe, bar, pub, nightclub, music_venue, comedy
+    "keywords": [],        // SPECIFIC things they mentioned: e.g. ["burgers","rooftop","cocktails","live jazz","vegan"]. Capture the actual words.
+    "vibe": null,          // chilled | chaos | cheap | date_night | hidden_gems | stag_hen | null
+    "budget": null,        // cheap | moderate | premium | null
+    "timing": null,        // tonight | tomorrow | weekend | null
+    "group": null,         // couple | mates | family | solo | null
+    "occasion": null,      // e.g. "birthday", "anniversary", null
+    "avoid": [],           // anything they said they DON'T want
+    "cityMention": null
   }
 }
 
-Set "ready_to_plan" to true as soon as you have a rough sense of what they want — don't wait for every detail. When ready_to_plan is true, your "say" should be something like "Love it, give me two secs to sort this…". Keep "say" warm and human every single time.`
+IMPORTANT: "keywords" is the most important field — capture the specific things they actually asked for (foods, drink types, activities, atmosphere words) so the plan can match them. Don't leave it empty if they gave you specifics.
+
+Only set "ready_to_plan" to true once you understand what they actually want — the specifics, not just "something fun". When true, your "say" is a warm "Love it — give me two secs to sort this…". Keep "say" human every single time.`
 
 // POST /concierge  { message, history?, selectedCity, lat, lng }
 //   history: full prior thread [{ role:'user'|'sappo', text }]
@@ -100,7 +109,7 @@ router.post('/', async (req, res, next) => {
 
 // Pull intent from the whole conversation (Gemini's extract + keyword backup).
 function mergeIntent(thread, extracted = {}) {
-  const merged = { categories: [], vibe: null, budget: null, timing: null, cityMention: null, raw: '' }
+  const merged = { categories: [], vibe: null, budget: null, timing: null, cityMention: null, keywords: [], raw: '' }
   // keyword-parse every user message as a backstop
   for (const m of thread) {
     if (m.role !== 'user') continue
@@ -114,23 +123,31 @@ function mergeIntent(thread, extracted = {}) {
   }
   // Gemini's extraction wins where present
   if (extracted.categories?.length) merged.categories = Array.from(new Set([...merged.categories, ...extracted.categories]))
+  if (extracted.keywords?.length) merged.keywords = Array.from(new Set([...merged.keywords, ...extracted.keywords]))
   merged.vibe = extracted.vibe || merged.vibe
   merged.budget = extracted.budget || merged.budget
   merged.timing = extracted.timing || merged.timing
   merged.cityMention = extracted.cityMention || merged.cityMention
+  merged.group = extracted.group || null
+  merged.occasion = extracted.occasion || null
+  merged.avoid = extracted.avoid || []
   return merged
 }
 
 async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown }) {
   const loc = resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
-  logger.info('[concierge] planning', JSON.stringify({ city: loc.cityName, categories: intent.categories, vibe: intent.vibe, budget: intent.budget, timing: intent.timing }))
+  logger.info('[concierge] planning', JSON.stringify({ city: loc.cityName, categories: intent.categories, keywords: intent.keywords, vibe: intent.vibe, budget: intent.budget }))
 
   let weather = null
   try { weather = await getWeather(loc.lat, loc.lng) } catch (e) { logger.error('[concierge] weather skipped:', e.message) }
 
+  // Feed the planner the specific keywords (burgers, rooftop…) plus the raw text,
+  // so venue matching reflects what they actually asked for.
+  const planText = [intent.keywords?.join(' '), intent.raw].filter(Boolean).join(' ')
+
   const plan = await planNight({
     city: loc.cityName,
-    text: intent.raw,
+    text: planText,
     vibe: intent.vibe,
     stops: 3,
     weather,
