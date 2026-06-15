@@ -43,7 +43,37 @@ async function generateJSON(prompt, { temperature = 0.9 } = {}) {
   }
 }
 
-module.exports = { generateJSON, chatJSON, MODEL }
+module.exports = { generateJSON, chatJSON, chatText, MODEL }
+
+/**
+ * Plain-text multi-turn chat — Gemini just talks, no JSON straitjacket.
+ * This is what lets the conversation "breathe". Returns a string (or null).
+ */
+async function chatText(system, history, { temperature = 1.0 } = {}) {
+  if (!KEY()) { logger.warn('GEMINI_API_KEY missing'); return null }
+  try {
+    const contents = history.map(m => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: m.text }],
+    }))
+    const res = await axios.post(
+      URL,
+      {
+        systemInstruction: { parts: [{ text: system }] },
+        contents,
+        generationConfig: { temperature },
+      },
+      { headers: { 'x-goog-api-key': KEY(), 'Content-Type': 'application/json' }, timeout: 25000 }
+    )
+    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    return text.trim() || null
+  } catch (err) {
+    const status = err.response?.status
+    const msg = err.response?.data?.error?.message || err.message
+    logger.error(`Gemini text failed (${status}):`, msg)
+    return null
+  }
+}
 
 /**
  * Multi-turn conversation with Gemini. Pass the FULL history so it has memory

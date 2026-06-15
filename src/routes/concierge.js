@@ -1,6 +1,6 @@
 const express = require('express')
 const { CITIES } = require('../config')
-const { chatJSON } = require('../clients/gemini')
+const { chatText } = require('../clients/gemini')
 const { parseIntent } = require('../services/parseIntent')
 const { planNight } = require('../services/planNight')
 const { getWeather } = require('../clients/weather')
@@ -20,33 +20,19 @@ function resolveLocation({ lat, lng, selectedCity, promptCity }) {
   return { cityName, lat: useLat, lng: useLng }
 }
 
-const SYSTEM = `You are Sappo — a warm, funny, switched-on local mate who helps people plan real days and nights out. You are NOT a corporate chatbot and NOT a form. You text like a real friend: relaxed, natural, a bit of personality, short messages.
+const SYSTEM = `You are Sappo — a warm, switched-on local guide who helps travellers and visitors make the most of a place. Someone's arrived in a city (or has a few hours, a day, a weekend) and doesn't know what to do. Your job is to understand what they're after and build them a brilliant day or outing.
 
-HOW TO TALK:
-- Actually LISTEN to what they say and react to it specifically. If they say "it's my anniversary," acknowledge that. If they say "we love spicy food," remember it. Don't give generic responses.
-- Ask about what genuinely matters for a good plan if it's missing: what they fancy doing (food? drinks? something active?), roughly where, and the vibe. But keep it light — one quick question at a time, never an interrogation.
-- Once you've got a real sense of what they want (not just "a night out" but the actual flavour of it), make the plan.
+You talk like a real person — friendly, natural, a little personality, short messages like a mate who knows the city. NOT a corporate bot, NOT a form.
 
-Each turn, reply ONLY with JSON in this shape:
-{
-  "say": "your natural, human reply — like a text from a mate, reacting to what they actually said",
-  "ready_to_plan": true or false,
-  "extracted": {
-    "categories": [],     // any of: restaurant, cafe, bar, pub, nightclub, music_venue, comedy
-    "keywords": [],        // SPECIFIC things they mentioned: e.g. ["burgers","rooftop","cocktails","live jazz","vegan"]. Capture the actual words.
-    "vibe": null,          // chilled | chaos | cheap | date_night | hidden_gems | stag_hen | null
-    "budget": null,        // cheap | moderate | premium | null
-    "timing": null,        // tonight | tomorrow | weekend | null
-    "group": null,         // couple | mates | family | solo | null
-    "occasion": null,      // e.g. "birthday", "anniversary", null
-    "avoid": [],           // anything they said they DON'T want
-    "cityMention": null
-  }
-}
+How you work:
+- Open warm: figure out their situation — how long they've got, where, and what they're into (history, food, music, views, culture, hidden gems, or just "surprise me").
+- React to what they actually say. If they've got one day, think about fitting things into a day. If they've a few hours before a train, keep it tight and close.
+- Ask only what you genuinely need — usually just what they're into and how long they've got. One light question at a time. Never interrogate.
+- The moment you've got enough to make a cracking plan, make it. Don't over-ask.
 
-IMPORTANT: "keywords" is the most important field — capture the specific things they actually asked for (foods, drink types, activities, atmosphere words) so the plan can match them. Don't leave it empty if they gave you specifics.
+You are a TRAVEL COMPANION. Your job is to create experiences and help people discover a place — not to list venues. Think itinerary: a few great stops that flow well, fit their time, and make the most of where they are.
 
-Only set "ready_to_plan" to true once you understand what they actually want — the specifics, not just "something fun". When true, your "say" is a warm "Love it — give me two secs to sort this…". Keep "say" human every single time.`
+Reply in natural plain text — just talk to them like a friend. Don't use JSON, don't use bullet lists, just chat.`
 
 // POST /concierge  { message, history?, selectedCity, lat, lng }
 //   history: full prior thread [{ role:'user'|'sappo', text }]
@@ -55,62 +41,50 @@ router.post('/', async (req, res, next) => {
     const { message, history = [], selectedCity, lat, lng } = req.body || {}
     if (!message) return res.status(400).json({ error: 'message required' })
 
-    // Build the full conversation for Gemini (this is the memory that stops loops).
+    // Build the full conversation for Gemini (full history = memory = no loops).
     const thread = [...history, { role: 'user', text: message }]
     const geminiHistory = thread.map(m => ({
       role: m.role === 'user' ? 'user' : 'model',
       text: m.text,
     }))
-
-    // How many times has Sappo already replied? (used for the safety rail)
     const sappoTurns = history.filter(m => m.role === 'sappo').length
 
-    // Let Gemini run the conversation with full context.
-    let brain = await chatJSON(SYSTEM, geminiHistory, { temperature: 0.95 })
-    const geminiWorking = !!(brain && brain.say)
+    // Decide if the user clearly wants the plan NOW (so we don't keep chatting).
+    const userWantsPlanNow = /\b(plan|sort|go on then|do it|let'?s go|build it|make it|surprise me|just pick|whatever)\b/i.test(message)
 
-    // Fallback if Gemini is unavailable: have a basic scripted chat, don't just dump a plan.
-    if (!geminiWorking) {
-      logger.warn('[concierge] Gemini unavailable — using scripted fallback')
-      const intent = parseIntent(message)
-      const hasEnough = (intent.categories?.length || intent.vibe)
-      // First, gather a little before planning — don't plan from "yo".
-      if (!hasEnough && sappoTurns < 1) {
-        return res.json({
-          type: 'reply',
-          say: "Hey! What are you in the mood for — food, drinks, a night out, something chilled?",
-          geminiDown: true,
-        })
+    // Let Gemini just TALK — plain text, no JSON straitjacket (this is what stops the loop).
+    const reply = await chatText(SYSTEM, geminiHistory, { temperature: 1.0 })
+
+    // If Gemini is down, fall back gracefully (don't repeat a canned line forever).
+    if (!reply) {
+      logger.warn('[concierge] Gemini unavailable — planning from what we have')
+      const intent = mergeIntent(thread, {})
+      if (!intent.categories.length && !intent.vibe && sappoTurns < 1) {
+        return res.json({ type: 'reply', say: "Hey! Where are you and what are you into — food, history, music, views, hidden gems?", geminiDown: true })
       }
-      if (!hasEnough && sappoTurns < 2) {
-        return res.json({
-          type: 'reply',
-          say: "Nice — and roughly what budget are we working with? Cheap and cheerful, comfortable, or treat yourselves?",
-          geminiDown: true,
-        })
-      }
-      return await makePlan(res, { selectedCity, lat, lng, intent: mergeIntent(thread, {}), sayBefore: "Right, let me sort you something…", geminiDown: true })
+      return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true })
     }
 
-    // SAFETY RAIL: if we've already asked enough, force a plan regardless.
-    const forcePlan = sappoTurns >= MAX_QUESTIONS
-    const ready = brain.ready_to_plan === true || forcePlan
+    // Decide whether it's time to build the plan. We let Gemini signal readiness in
+    // its own words, OR the user asked, OR we've chatted enough. Otherwise keep talking.
+    const geminiSignalsReady = /(give me (a sec|two secs|a moment|a min)|let me (sort|sort this|put this together|build|pull this together)|on it|sorting (this|that) now|here'?s (what|the) (i'?m thinking|plan))/i.test(reply)
+    const enoughChat = sappoTurns >= MAX_QUESTIONS
+    const ready = geminiSignalsReady || userWantsPlanNow || enoughChat
 
     if (!ready) {
-      // Still chatting — return Sappo's natural reply, no plan yet.
-      return res.json({ type: 'reply', say: brain.say })
+      // Keep the conversation flowing — just return Gemini's natural reply.
+      return res.json({ type: 'reply', say: reply })
     }
 
-    // Ready to plan — merge everything Gemini extracted across the convo.
-    const intent = mergeIntent(thread, brain.extracted)
-    return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: brain.say })
+    // Time to plan. Extract intent from the whole conversation (keyword-based, light).
+    const intent = mergeIntent(thread, {})
+    return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: reply })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
-// Pull intent from the whole conversation (Gemini's extract + keyword backup).
+// Pull intent from the whole conversation (lightweight keyword parse — no JSON needed).
 function mergeIntent(thread, extracted = {}) {
   const merged = { categories: [], vibe: null, budget: null, timing: null, cityMention: null, keywords: [], raw: '' }
-  // keyword-parse every user message as a backstop
   for (const m of thread) {
     if (m.role !== 'user') continue
     const p = parseIntent(m.text)
@@ -124,13 +98,7 @@ function mergeIntent(thread, extracted = {}) {
   // Gemini's extraction wins where present
   if (extracted.categories?.length) merged.categories = Array.from(new Set([...merged.categories, ...extracted.categories]))
   if (extracted.keywords?.length) merged.keywords = Array.from(new Set([...merged.keywords, ...extracted.keywords]))
-  merged.vibe = extracted.vibe || merged.vibe
-  merged.budget = extracted.budget || merged.budget
-  merged.timing = extracted.timing || merged.timing
-  merged.cityMention = extracted.cityMention || merged.cityMention
-  merged.group = extracted.group || null
-  merged.occasion = extracted.occasion || null
-  merged.avoid = extracted.avoid || []
+  merged.keywords = merged.raw ? (merged.raw.match(/[a-z]{4,}/gi) || []) : []
   return merged
 }
 
@@ -141,9 +109,8 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
   let weather = null
   try { weather = await getWeather(loc.lat, loc.lng) } catch (e) { logger.error('[concierge] weather skipped:', e.message) }
 
-  // Feed the planner the specific keywords (burgers, rooftop…) plus the raw text,
-  // so venue matching reflects what they actually asked for.
-  const planText = [intent.keywords?.join(' '), intent.raw].filter(Boolean).join(' ')
+  // The planner keyword-matches venue names against the user's actual words.
+  const planText = intent.raw || ''
 
   const plan = await planNight({
     city: loc.cityName,
@@ -180,15 +147,15 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
 // Tells you if Gemini is actually responding on this server.
 router.get('/test-gemini', async (req, res) => {
   try {
-    const out = await chatJSON(
-      'You are a test. Reply ONLY with JSON: {"say":"a friendly hello","ready_to_plan":false,"extracted":{}}',
+    const out = await chatText(
+      'You are Sappo. Reply in one short friendly sentence.',
       [{ role: 'user', text: 'say hi' }],
       { temperature: 0.5 }
     )
-    if (out && out.say) {
-      return res.json({ gemini: 'WORKING ✓', reply: out.say, keyPresent: !!process.env.GEMINI_API_KEY })
+    if (out) {
+      return res.json({ gemini: 'WORKING ✓', reply: out, keyPresent: !!process.env.GEMINI_API_KEY })
     }
-    return res.json({ gemini: 'NOT WORKING ✗', reply: null, keyPresent: !!process.env.GEMINI_API_KEY, hint: 'Gemini returned nothing — likely missing/invalid GEMINI_API_KEY or model name rejected. Check Railway logs for "Gemini chat failed".' })
+    return res.json({ gemini: 'NOT WORKING ✗', reply: null, keyPresent: !!process.env.GEMINI_API_KEY, hint: 'Gemini returned nothing — likely missing/invalid GEMINI_API_KEY. Check Railway logs for "Gemini text failed".' })
   } catch (e) {
     return res.json({ gemini: 'ERROR ✗', error: e.message, keyPresent: !!process.env.GEMINI_API_KEY })
   }
