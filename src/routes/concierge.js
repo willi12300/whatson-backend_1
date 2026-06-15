@@ -60,7 +60,7 @@ async function fetchWeather(loc) {
   } catch (e) { logger.error('[concierge] weather failed:', e.message); return null }
 }
 
-async function buildPlan(loc, state, weather, ack, res) {
+async function buildPlan(loc, state, weather, ack, res, opts = {}) {
   const plan = await planNight({
     city: loc.cityName,
     text: state._lastMessage || '',
@@ -71,10 +71,14 @@ async function buildPlan(loc, state, weather, ack, res) {
     busyPref: state.busyPref,
     categories: state.categories || [],
     lat: loc.lat, lng: loc.lng,
+    recentlyShownIds: state._shownVenueIds || [],
+    debug: opts.debug || false,
   })
   if (plan.error) {
-    return res.json({ type: 'plan_error', message: plan.error === 'no_venues' ? `I haven't got ${loc.cityName} covered yet — try Liverpool or Manchester?` : "Couldn't pull that together — try again?", state })
+    return res.json({ type: 'plan_error', message: plan.error === 'no_venues' ? `I haven't got ${loc.cityName} covered yet — try Liverpool or Manchester?` : (plan.error === 'no_matches' ? "Nothing quite matched that — want to loosen it up a bit?" : "Couldn't pull that together — try again?"), state, debug: plan.debug })
   }
+  // remember what we showed so the next plan varies
+  state._shownVenueIds = Array.from(new Set([...(state._shownVenueIds || []), ...(plan.shownVenueIds || [])])).slice(-30)
   return res.json({
     type: 'plan',
     city: loc.cityName,
@@ -88,6 +92,7 @@ async function buildPlan(loc, state, weather, ack, res) {
     gettingHome: plan.gettingHome,
     tip: plan.tip,
     state,
+    debug: plan.debug,
   })
 }
 
@@ -103,10 +108,13 @@ router.post('/', async (req, res, next) => {
 
     let state = mergeState(emptyState(), prevState || {})
     state._lastMessage = message || ''
-    // carry the "user chose to add more" flag forward (mergeState drops _ fields)
+    // carry control + history flags forward (mergeState drops _ fields)
     if (prevState?._confirmedAddMore) state._confirmedAddMore = true
+    if (prevState?._shownVenueIds) state._shownVenueIds = prevState._shownVenueIds
     // when the user taps "Add more", mark it so the NEXT message plans
     if (confirm === 'add_more') state._confirmedAddMore = true
+    // debug mode: ?debug=1 or body.debug
+    const debugOn = req.query.debug === '1' || req.body.debug === true
 
     // 1. If this message is an answer to a question we asked, map it directly.
     if (askedKey && message) applyAnswer(state, askedKey, message)
@@ -129,7 +137,7 @@ router.post('/', async (req, res, next) => {
     // "Get the plan" → plan immediately.
     if (confirm === 'get_plan') {
       const weather = await fetchWeather(loc)
-      return await buildPlan(loc, state, weather, ack, res)
+      return await buildPlan(loc, state, weather, ack, res, { debug: debugOn })
     }
 
     // "Add more" tap → invite ONE more message, then we'll plan on their reply.
@@ -147,7 +155,7 @@ router.post('/', async (req, res, next) => {
     // If they already tapped "Add more" last turn, THIS message is the extra detail → plan now.
     if (state._confirmedAddMore) {
       const weather = await fetchWeather(loc)
-      return await buildPlan(loc, state, weather, ack, res)
+      return await buildPlan(loc, state, weather, ack, res, { debug: debugOn })
     }
 
     // 4. Decide: ask a missing required field, OR move to the confirmation gate.

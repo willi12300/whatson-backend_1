@@ -4,6 +4,7 @@
 
 const { query } = require('../db/pool')
 const { generateJSON } = require('../clients/gemini')
+const { scoreVenues, pickVaried } = require('./scoreVenues')
 const { travelBetween } = require('../clients/routes')
 const { estimatePlanCost, budgetGuidance } = require('./costEstimate')
 const { estimateBusy } = require('./busyEstimate')
@@ -19,63 +20,56 @@ const MODE_HINTS = {
   stag_hen:  'a big group celebration — lively bars, group-friendly spots, party atmosphere',
 }
 
-async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng }) {
-  // 1. Pull a wider shortlist, then rank by relevance to the request.
+async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng, recentlyShownIds = [], debug = false }) {
+  // 1. Fetch VERIFIED candidates for THIS CITY only (full fields for scoring).
   const { rows: allVenues } = await query(
-    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
+    `SELECT id, name, category_slug, rating, rating_count, price_level, price_range,
+            address, lat, lng, opening_hours, website, menu_url
      FROM venues
      WHERE city = $1 AND name IS NOT NULL
      ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
-     LIMIT 140`,
+     LIMIT 250`,
     [city]
   )
   if (!allVenues.length) return { error: 'no_venues' }
 
-  // Score each venue for relevance to the user's actual request.
-  const wantCats = new Set(categories || [])
-  const scored = allVenues.map(v => {
-    let score = 0
-    // category match is the strongest signal
-    if (wantCats.size && wantCats.has(v.category_slug)) score += 50
-    // rating quality (capped influence)
-    score += Math.min((v.rating || 0) * 2, 10)
-    score += Math.min((v.rating_count || 0) / 200, 5)
-    // budget fit
-    if (budget?.budget_level === 'cheap' && v.price_level && v.price_level <= 2) score += 8
-    if (budget?.budget_level === 'premium' && v.price_level && v.price_level >= 3) score += 6
-    // distance (if we have a start point) — closer is better
-    if (lat != null && lng != null && v.lat != null) {
-      const d = haversineKm(lat, lng, v.lat, v.lng)
-      score += Math.max(0, 8 - d)  // within ~8km gets a bonus that decays
-    }
-    // a little randomness so repeated plans vary among good matches
-    score += Math.random() * 6
-    return { ...v, _score: score }
-  }).sort((a, b) => b._score - a._score)
-
-  // Keep the top relevant venues for the prompt (ensures category matches lead).
-  const venues = scored.slice(0, 60)
-
-  // 2. Pull a few upcoming events too
+  // 2. Pull upcoming events (also city-scoped)
   const { rows: events } = await query(
     `SELECT e.id, e.name, e.starts_at, e.is_free, e.min_price, v.name AS venue_name, e.venue_id
      FROM events e JOIN venues v ON v.id = e.venue_id
      WHERE v.city = $1 AND e.status='active' AND e.starts_at >= now()
-     ORDER BY e.starts_at ASC LIMIT 20`,
+     ORDER BY e.starts_at ASC LIMIT 30`,
     [city]
   )
 
-  // 3. Build the prompt
-  // Precompute busy estimates for each venue (legal heuristics)
+  // 3. SCORE + FILTER via the recommendation engine (backend decides, not Gemini).
   const now = new Date()
-  const busyByVenue = {}
-  for (const v of venues) busyByVenue[v.id] = estimateBusy(v, { when: now, events })
+  const intentForScore = {
+    categories, vibe: vibe || mode, budget: budget?.budget_level,
+    budgetPerPerson: budget?.budget_per_person, busyPref, raw: text,
+  }
+  const { ranked, debug: scoreDebug } = scoreVenues(allVenues, intentForScore, {
+    lat, lng, when: now, weather, events, recentlyShownIds: new Set(recentlyShownIds),
+  })
 
+  if (!ranked.length) return { error: 'no_matches', debug: debug ? scoreDebug : undefined }
+
+  // 4. Pick a VARIED shortlist from the top matches (not always the same top N).
+  const shortlist = pickVaried(ranked, 12)
+  const venues = shortlist.map(s => s.venue)
+  const reasonsById = Object.fromEntries(shortlist.map(s => [String(s.venue.id), s.reasons]))
+  const scoreById = Object.fromEntries(shortlist.map(s => [String(s.venue.id), s.score]))
+  const busyByVenue = {}
+  for (const s of shortlist) busyByVenue[s.venue.id] = s.venue._busy || estimateBusy(s.venue, { when: now, events })
+
+  // 5. Build the prompt — Gemini ONLY sees these verified, pre-scored candidates.
   const venueList = venues.map(v => {
     const b = busyByVenue[v.id]
-    return `${v.id}|${v.name}|${v.category_slug}|rating:${v.rating || '?'}|price:${v.price_level ?? '?'}|busy:${b.level}`
+    const dist = v._dist != null ? `${v._dist.toFixed(1)}km` : '?'
+    const why = (reasonsById[String(v.id)] || []).join(', ')
+    return `${v.id}|${v.name}|${v.category_slug}|rating:${v.rating || '?'}|price:${v.price_level ?? '?'}|busy:${b?.level || '?'}|${dist}|score:${scoreById[String(v.id)]}|reasons:${why}`
   }).join('\n')
-  const eventList = events.map(e =>
+  const eventList = events.slice(0, 15).map(e =>
     `${e.id}|${e.name}|@${e.venue_name}|${new Date(e.starts_at).toLocaleString()}|${e.is_free ? 'free' : '£' + (e.min_price || '?')}`
   ).join('\n')
 
@@ -131,28 +125,29 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home, bud
   if (busyPref === 'avoid') busyBlock = `\nCROWDS: The user wants to AVOID packed places. Prefer venues marked busy:quiet or busy:moderate. Avoid busy:very_busy unless there's a strong reason.`
   else if (busyPref === 'lively') busyBlock = `\nCROWDS: The user wants somewhere LIVELY. Lean towards busy:busy or busy:very_busy venues with energy.`
 
-  const prompt = `You are Sappo — a warm, switched-on local mate who plans real nights and days out in ${city}. You talk like a real person texting a friend: natural, a bit of personality, never corporate or salesy.
+  const prompt = `You are Sappo — a warm, switched-on local mate who plans real days and nights out in ${city}. You talk like a real person texting a friend: natural, a bit of personality, never corporate.
 ${intent}${catBlock}${weatherBlock}${budgetBlock}${offersBlock}${busyBlock}
 
-Build a ${stops}-stop itinerary using ONLY venues from this list (use their exact id).
-Each venue line shows: id|name|category|rating|price(1-4, ?=unknown)|busy(quiet/moderate/busy/very_busy).
+CRITICAL: These are the ONLY venues you may use. They have already been verified, filtered to ${city}, and scored for THIS user's request. Do NOT invent venues or use any from memory. Pick the best ${stops} for a coherent outing using their exact id. Each line is:
+id|name|category|rating|price(1-4)|busy|distance|score|reasons
+(higher score = better match for this user. The reasons tell you WHY it fits.)
 VENUES:
 ${venueList}
 
-UPCOMING EVENTS (optional to include, use exact id):
+UPCOMING EVENTS (optional, use exact id):
 ${eventList || '(none)'}
 
 Respond with JSON only in this exact shape:
 {
   "title": "short catchy name for the outing",
-  "vibe": "one short line, in your natural voice, on what kind of night/day this is",
+  "vibe": "one short line in your natural voice on what kind of outing this is",
   "stops": [
-    { "venueId": "<id from list>", "order": 1, "label": "First up", "why": "one short, specific, human reason this place fits what they asked for" }
+    { "venueId": "<id from list>", "order": 1, "label": "First up", "why": "one short, specific, human reason this place fits what they asked for — draw on the reasons given" }
   ],
-  "reasoning": "one or two sentences, like a mate explaining the plan — mention the real things you balanced (their budget, the weather, keeping it chilled, a deal you used). Specific, not generic.",
-  "tip": "one genuinely useful insider tip for the night"
+  "reasoning": "one or two sentences like a mate explaining the plan — mention the real things you balanced (budget, weather, kept it chilled, avoided busy spots). Specific, not generic.",
+  "tip": "one genuinely useful insider tip"
 }
-Rules: pick ${stops} stops, ordered as a sensible progression (food/drinks first, livelier later). Only use venueIds from the list. Respect budget and crowd preferences. Keep every bit of text sounding like a real person — warm, specific, a little playful — never like marketing copy. Keep consecutive stops reasonably close so people aren't trekking across the city.`
+Rules: pick exactly ${stops} stops from the list, ordered as a sensible progression (food/drinks first, livelier later). ONLY use venueIds that appear above — never anything else. Prefer higher-scored venues but build a coherent route. Respect budget and crowd preferences. Every bit of text must sound like a real warm person, never marketing copy. Keep consecutive stops reasonably close.`
 
   // 4. Ask Gemini
   const ai = await generateJSON(prompt, { temperature: mode === 'chaos' ? 1.0 : 0.9 })
@@ -171,8 +166,12 @@ Rules: pick ${stops} stops, ordered as a sensible progression (food/drinks first
       if (!v) return null
       const busy = busyByVenue[v.id] || estimateBusy(v, { when: now, events })
       const ev = eventByVenue[v.id]
+      // build a concrete "why chosen" — Gemini's reason, backed by the engine's facts
+      const engineReasons = reasonsById[String(v.id)] || []
+      const why = s.why && s.why.length > 8 ? s.why : (engineReasons.length ? `Chosen because it ${engineReasons.slice(0, 3).join(', ')}.` : 'A solid match for what you asked for.')
       return {
-        ...v, order: s.order, label: s.label, why: s.why,
+        ...v, order: s.order, label: s.label, why,
+        whyFactors: engineReasons,
         busy,
         eventPrice: ev && !ev.is_free ? (ev.min_price || null) : (ev?.is_free ? 0 : null),
       }
@@ -224,6 +223,8 @@ Rules: pick ${stops} stops, ordered as a sensible progression (food/drinks first
     weatherNote: weather?.planningHint?.note ? `Weather considered: ${weather.planningHint.note}.` : null,
     gettingHome,
     source: 'ai',
+    shownVenueIds: stopsOut.map(s => s.id),   // so the caller can avoid repeats next time
+    debug: debug ? { intent: intentForScore, city, ...scoreDebug, shortlistSize: venues.length } : undefined,
   }
 }
 
