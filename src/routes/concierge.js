@@ -13,11 +13,47 @@ const router = express.Router()
 // Hard safety rail: never ask more than this many questions before planning.
 const MAX_QUESTIONS = 3
 
+// Find the nearest known city to a set of coordinates (simple great-circle distance).
+// Returns { key, name, lat, lng, distKm } or null.
+function nearestCity(lat, lng) {
+  if (lat == null || lng == null) return null
+  const R = 6371, r = x => x * Math.PI / 180
+  let best = null
+  for (const [key, c] of Object.entries(CITIES)) {
+    const dLat = r(c.lat - lat), dLng = r(c.lng - lng)
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(lat)) * Math.cos(r(c.lat)) * Math.sin(dLng / 2) ** 2
+    const distKm = 2 * R * Math.asin(Math.sqrt(h))
+    if (!best || distKm < best.distKm) best = { key, name: c.name, lat: c.lat, lng: c.lng, distKm }
+  }
+  return best
+}
+
 function resolveLocation({ lat, lng, selectedCity, promptCity }) {
-  let cityName = promptCity || selectedCity || 'Liverpool'
-  let useLat = lat, useLng = lng
+  // Priority:
+  // 1. The user EXPLICITLY said where they are in chat (promptCity) — always wins.
+  // 2. Real GPS coordinates → reverse-geocode to the nearest known city. This OVERRIDES
+  //    any stale selectedCity setting (the bug: app said Manchester, user was in Liverpool).
+  // 3. selectedCity (app setting) as a fallback.
+  // 4. Liverpool as a last resort.
+  let cityName, useLat = lat, useLng = lng
+
+  if (promptCity) {
+    cityName = promptCity
+  } else if (lat != null && lng != null) {
+    const near = nearestCity(lat, lng)
+    // Only trust GPS→city if it's plausibly within ~60km of a known city centre.
+    if (near && near.distKm <= 60) {
+      cityName = near.name
+    } else {
+      cityName = selectedCity || 'Liverpool'   // GPS far from any known city — fall back
+    }
+  } else {
+    cityName = selectedCity || 'Liverpool'
+  }
+
+  // If we have no GPS, use the chosen city's centre for distance/weather.
   if (useLat == null || useLng == null) {
-    const preset = CITIES[(cityName || '').toLowerCase()]
+    const preset = CITIES[(cityName || '').toLowerCase().replace(/\s+/g, '')]
     if (preset) { useLat = preset.lat; useLng = preset.lng }
   }
   return { cityName, lat: useLat, lng: useLng }
@@ -189,7 +225,9 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
   // 2. Ask Gemini to build a hybrid itinerary (prefer DB venues, fill gaps with real places).
   const conversation = (thread || []).slice(-12)
   const prefNote = buildPrefNote(boosts)
-  const itin = geminiDown ? null : await buildItinerary(SYSTEM, conversation, dbVenues, { weather, prefNote })
+  // Current local time for the city (so Gemini suggests time-appropriate places).
+  const localTime = cityLocalTime(loc.cityName)
+  const itin = geminiDown ? null : await buildItinerary(SYSTEM, conversation, dbVenues, { weather, prefNote, localTime })
 
   // 3. If the hybrid build worked, enrich each stop with verified data, coords, photo + map link.
   if (itin && Array.isArray(itin.stops) && itin.stops.length) {
@@ -331,4 +369,20 @@ function buildPrefNote(boosts) {
   if (top.length) bits.push('they tend to enjoy: ' + top.join(', '))
   if (!bits.length) return ''
   return `\nThis traveller's known preferences (personalise gently, don't mention these notes): ${bits.join('; ')}.`
+}
+
+// Rough local time string for a city, using its timezone (for time-appropriate planning).
+function cityLocalTime(cityName) {
+  const TZ = {
+    'Liverpool': 'Europe/London', 'Manchester': 'Europe/London', 'London': 'Europe/London',
+    'Birmingham': 'Europe/London', 'Leeds': 'Europe/London', 'Glasgow': 'Europe/London',
+    'Bristol': 'Europe/London', 'Edinburgh': 'Europe/London', 'Dublin': 'Europe/Dublin',
+    'New York': 'America/New_York', 'Los Angeles': 'America/Los_Angeles',
+    'Berlin': 'Europe/Berlin', 'Amsterdam': 'Europe/Amsterdam', 'Barcelona': 'Europe/Madrid',
+    'Paris': 'Europe/Paris', 'Sydney': 'Australia/Sydney',
+  }
+  const tz = TZ[cityName] || 'Europe/London'
+  try {
+    return new Intl.DateTimeFormat('en-GB', { hour: 'numeric', minute: '2-digit', weekday: 'short', timeZone: tz }).format(new Date())
+  } catch { return null }
 }

@@ -32,6 +32,17 @@ function haversineKm(a, b, c, d) {
   return 2 * R * Math.asin(Math.sqrt(h))
 }
 
+// Nearest known city to coordinates (for GPS → city, overriding stale selectedCity).
+function nearestCity(lat, lng) {
+  if (lat == null || lng == null) return null
+  let best = null
+  for (const [key, c] of Object.entries(CITIES)) {
+    const distKm = haversineKm(lat, lng, c.lat, c.lng)
+    if (distKm != null && (!best || distKm < best.distKm)) best = { key, name: c.name, distKm }
+  }
+  return best
+}
+
 function isOpenNow(openingHours, when = new Date()) {
   try {
     const oh = typeof openingHours === 'string' ? JSON.parse(openingHours) : openingHours
@@ -55,10 +66,14 @@ router.post('/', async (req, res, next) => {
     const { mode = 'anything', distance = '20min', budget, selectedCity, deviceId } = req.body || {}
     let { lat, lng } = req.body || {}
 
-    // Resolve location: GPS preferred, else selected city centre.
-    let cityName = selectedCity || 'Liverpool'
-    if (lat == null || lng == null) {
-      const preset = CITIES[(cityName || '').toLowerCase()]
+    // Resolve location: real GPS → nearest city (overrides stale selectedCity); else city centre.
+    let cityName
+    if (lat != null && lng != null) {
+      const near = nearestCity(lat, lng)
+      cityName = (near && near.distKm <= 60) ? near.name : (selectedCity || 'Liverpool')
+    } else {
+      cityName = selectedCity || 'Liverpool'
+      const preset = CITIES[(cityName || '').toLowerCase().replace(/\s+/g, '')]
       if (preset) { lat = preset.lat; lng = preset.lng }
     }
 
