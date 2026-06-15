@@ -43,4 +43,39 @@ async function generateJSON(prompt, { temperature = 0.9 } = {}) {
   }
 }
 
-module.exports = { generateJSON, MODEL }
+module.exports = { generateJSON, chatJSON, MODEL }
+
+/**
+ * Multi-turn conversation with Gemini. Pass the FULL history so it has memory
+ * (this is what stops the looping). `system` sets the persona/instructions.
+ * `history` is [{ role:'user'|'model', text }]. Returns parsed JSON or null.
+ */
+async function chatJSON(system, history, { temperature = 0.95 } = {}) {
+  if (!KEY()) { logger.warn('GEMINI_API_KEY missing'); return null }
+  try {
+    const contents = history.map(m => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: m.text }],
+    }))
+    const res = await axios.post(
+      URL,
+      {
+        systemInstruction: { parts: [{ text: system }] },
+        contents,
+        generationConfig: { temperature, responseMimeType: 'application/json' },
+      },
+      {
+        headers: { 'x-goog-api-key': KEY(), 'Content-Type': 'application/json' },
+        timeout: 25000,
+      }
+    )
+    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    const clean = text.replace(/```json|```/g, '').trim()
+    return JSON.parse(clean)
+  } catch (err) {
+    const status = err.response?.status
+    const msg = err.response?.data?.error?.message || err.message
+    logger.error(`Gemini chat failed (${status}):`, msg)
+    return null
+  }
+}

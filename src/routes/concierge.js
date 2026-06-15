@@ -1,109 +1,144 @@
 const express = require('express')
 const { CITIES } = require('../config')
-const { parseIntent, missingInfo } = require('../services/parseIntent')
+const { chatJSON } = require('../clients/gemini')
+const { parseIntent } = require('../services/parseIntent')
 const { planNight } = require('../services/planNight')
 const { getWeather } = require('../clients/weather')
 const logger = require('../utils/logger')
 const router = express.Router()
 
-// Resolve the planning city with clear priority + logging.
+// Hard safety rail: never ask more than this many questions before planning.
+const MAX_QUESTIONS = 3
+
 function resolveLocation({ lat, lng, selectedCity, promptCity }) {
-  const log = { gpsCoords: null, selectedCity: selectedCity || null, promptCity: promptCity || null, finalCity: null, coordsUsed: null }
-
-  // 1. GPS coordinates win for distance/weather, but we still need a city name for venue lookup.
-  // 2-4. City name priority: prompt mention > selected city > fallback.
   let cityName = promptCity || selectedCity || 'Liverpool'
-  log.finalCity = cityName
-
-  // coordinates: prefer GPS, else city centre preset
   let useLat = lat, useLng = lng
   if (useLat == null || useLng == null) {
-    const preset = CITIES[cityName.toLowerCase()]
+    const preset = CITIES[(cityName || '').toLowerCase()]
     if (preset) { useLat = preset.lat; useLng = preset.lng }
-  } else {
-    log.gpsCoords = { lat, lng }
   }
-  log.coordsUsed = { lat: useLat, lng: useLng }
-  return { cityName, lat: useLat, lng: useLng, log }
+  return { cityName, lat: useLat, lng: useLng }
 }
 
-// POST /concierge  { message, deviceId, selectedCity, lat, lng, context }
-// context carries answers gathered so far: { timing, budget }
-// Returns either { type:'follow_up', question, options, key } or { type:'plan', ... }
+const SYSTEM = `You are Sappo — a warm, funny, switched-on local mate who helps people plan real days and nights out. You are NOT a corporate chatbot and NOT a form. You text like a real friend: relaxed, natural, a bit of personality, short messages.
+
+Your goal: have a quick, easy chat to understand what they fancy, then plan a great outing. Talk like a human — react to what they actually say, joke a little, keep it flowing. NEVER repeat a question you've already asked. NEVER ask more than a couple of things before just cracking on with a plan. If you've basically got the gist (roughly what they want + where), stop asking and make the plan — people hate being interrogated.
+
+Each turn, reply ONLY with JSON in this shape:
+{
+  "say": "your natural, human reply to them — like a text from a mate",
+  "ready_to_plan": true or false,
+  "extracted": {
+    "categories": [],   // any of: restaurant, cafe, bar, pub, nightclub, music_venue, comedy
+    "vibe": null,       // chilled | chaos | cheap | date_night | hidden_gems | stag_hen | null
+    "budget": null,     // cheap | moderate | premium | null
+    "timing": null,     // tonight | tomorrow | weekend | null
+    "cityMention": null // a city if they name one
+  }
+}
+
+Set "ready_to_plan" to true as soon as you have a rough sense of what they want — don't wait for every detail. When ready_to_plan is true, your "say" should be something like "Love it, give me two secs to sort this…". Keep "say" warm and human every single time.`
+
+// POST /concierge  { message, history?, selectedCity, lat, lng }
+//   history: full prior thread [{ role:'user'|'sappo', text }]
 router.post('/', async (req, res, next) => {
   try {
-    const { message, selectedCity, lat, lng, context = {} } = req.body || {}
-    if (!message && !context.intent) return res.status(400).json({ error: 'message required' })
+    const { message, history = [], selectedCity, lat, lng } = req.body || {}
+    if (!message) return res.status(400).json({ error: 'message required' })
 
-    // 1. Parse intent (merge with any prior context)
-    const parsed = message ? parseIntent(message) : (context.intent || {})
-    const intent = { ...parsed, ...stripNull(context.merge || {}) }
-    // apply follow-up answers
-    if (context.timing) intent.timing = context.timing
-    if (context.budget) intent.budget = context.budget
+    // Build the full conversation for Gemini (this is the memory that stops loops).
+    const thread = [...history, { role: 'user', text: message }]
+    const geminiHistory = thread.map(m => ({
+      role: m.role === 'user' ? 'user' : 'model',
+      text: m.text,
+    }))
 
-    // 2. Resolve location
-    const loc = resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
-    logger.info('[concierge] location', JSON.stringify(loc.log))
-    logger.info('[concierge] intent', JSON.stringify({ categories: intent.categories, vibe: intent.vibe, budget: intent.budget, busyPref: intent.busyPref, timing: intent.timing }))
+    // How many times has Sappo already replied? (used for the safety rail)
+    const sappoTurns = history.filter(m => m.role === 'sappo').length
 
-    // 3. Decide on a follow-up question (max 1-2 total across the convo)
-    const asked = context.asked || []
-    const missing = missingInfo(intent).filter(m => !asked.includes(m))
-    if (missing.length && asked.length < 2) {
-      const q = followUp(missing[0])
-      return res.json({
-        type: 'follow_up',
-        question: q.question,
-        options: q.options,
-        key: q.key,
-        // echo state so the client can send it back with the answer
-        state: { intent, asked: [...asked, missing[0]], city: loc.cityName },
-      })
+    // Let Gemini run the conversation with full context.
+    let brain = await chatJSON(SYSTEM, geminiHistory, { temperature: 0.95 })
+
+    // Fallback if Gemini is unavailable: use keyword parse + plan straight away.
+    if (!brain || !brain.say) {
+      logger.warn('[concierge] Gemini unavailable, planning from keywords')
+      const intent = parseIntent(message)
+      return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you a plan…" })
     }
 
-    // 4. Fetch live weather for the resolved location
-    let weather = null
-    try {
-      weather = await getWeather(loc.lat, loc.lng)
-      logger.info('[concierge] weather', JSON.stringify({ city: loc.cityName, temp: weather?.current?.temp, condition: weather?.current?.condition }))
-    } catch (e) { logger.error('[concierge] weather failed:', e.message) }
+    // SAFETY RAIL: if we've already asked enough, force a plan regardless.
+    const forcePlan = sappoTurns >= MAX_QUESTIONS
+    const ready = brain.ready_to_plan === true || forcePlan
 
-    // 5. Build the plan with full intent
-    const plan = await planNight({
-      city: loc.cityName,
-      text: intent.raw || message,
-      vibe: intent.vibe,
-      stops: 3,
-      weather,
-      budget: intent.budget ? { budget_level: intent.budget, budget_per_person: intent.budgetPerPerson } : null,
-      busyPref: intent.busyPref,
-      categories: intent.categories,
-      lat: loc.lat, lng: loc.lng,
-    })
+    if (!ready) {
+      // Still chatting — return Sappo's natural reply, no plan yet.
+      return res.json({ type: 'reply', say: brain.say })
+    }
 
-    if (plan.error) return res.status(404).json({ type: 'error', message: plan.error === 'no_venues' ? `I don't have venues for ${loc.cityName} yet.` : 'Could not build a plan.' })
-
-    res.json({
-      type: 'plan',
-      city: loc.cityName,
-      summary: plan.vibe || plan.title,
-      title: plan.title,
-      weather_note: plan.weatherNote,
-      reasoning: plan.reasoning,
-      cost: plan.cost,
-      stops: plan.stops,
-      gettingHome: plan.gettingHome,
-      tip: plan.tip,
-    })
+    // Ready to plan — merge everything Gemini extracted across the convo.
+    const intent = mergeIntent(thread, brain.extracted)
+    return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: brain.say })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
-function followUp(key) {
-  if (key === 'timing') return { key: 'timing', question: "Nice. When are we thinking?", options: ['Tonight', 'Tomorrow', 'This weekend'] }
-  if (key === 'budget') return { key: 'budget', question: "Sound. What's the budget like?", options: ['Cheap', 'Comfortable', 'Treat ourselves'] }
-  return { key, question: 'Tell me a bit more?', options: [] }
+// Pull intent from the whole conversation (Gemini's extract + keyword backup).
+function mergeIntent(thread, extracted = {}) {
+  const merged = { categories: [], vibe: null, budget: null, timing: null, cityMention: null, raw: '' }
+  // keyword-parse every user message as a backstop
+  for (const m of thread) {
+    if (m.role !== 'user') continue
+    const p = parseIntent(m.text)
+    if (p.categories?.length) merged.categories = Array.from(new Set([...merged.categories, ...p.categories]))
+    merged.vibe = merged.vibe || p.vibe
+    merged.budget = merged.budget || p.budget
+    merged.timing = merged.timing || p.timing
+    merged.cityMention = merged.cityMention || p.cityMention
+    merged.raw = merged.raw ? merged.raw + ' ' + m.text : m.text
+  }
+  // Gemini's extraction wins where present
+  if (extracted.categories?.length) merged.categories = Array.from(new Set([...merged.categories, ...extracted.categories]))
+  merged.vibe = extracted.vibe || merged.vibe
+  merged.budget = extracted.budget || merged.budget
+  merged.timing = extracted.timing || merged.timing
+  merged.cityMention = extracted.cityMention || merged.cityMention
+  return merged
 }
-function stripNull(o) { const r = {}; for (const k in o) if (o[k] != null) r[k] = o[k]; return r }
+
+async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore }) {
+  const loc = resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
+  logger.info('[concierge] planning', JSON.stringify({ city: loc.cityName, categories: intent.categories, vibe: intent.vibe, budget: intent.budget, timing: intent.timing }))
+
+  let weather = null
+  try { weather = await getWeather(loc.lat, loc.lng) } catch (e) { logger.error('[concierge] weather skipped:', e.message) }
+
+  const plan = await planNight({
+    city: loc.cityName,
+    text: intent.raw,
+    vibe: intent.vibe,
+    stops: 3,
+    weather,
+    budget: intent.budget ? { budget_level: intent.budget } : null,
+    categories: intent.categories || [],
+    lat: loc.lat, lng: loc.lng,
+  })
+
+  if (plan.error) {
+    return res.json({ type: 'reply', say: `I haven't got ${loc.cityName} fully covered yet — want to try Liverpool or Manchester?` })
+  }
+
+  return res.json({
+    type: 'plan',
+    say: sayBefore || "Here's what I'm thinking…",
+    city: loc.cityName,
+    title: plan.title,
+    summary: plan.vibe,
+    reasoning: plan.reasoning,
+    cost: plan.cost,
+    stops: plan.stops,
+    gettingHome: plan.gettingHome,
+    tip: plan.tip,
+    weather_note: plan.weatherNote,
+  })
+}
 
 module.exports = router
