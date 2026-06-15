@@ -61,12 +61,19 @@ async function chatText(system, history, { temperature = 1.0 } = {}) {
       {
         systemInstruction: { parts: [{ text: system }] },
         contents,
-        generationConfig: { temperature },
+        generationConfig: { temperature: Math.min(temperature, 1.0), maxOutputTokens: 800 },
       },
       { headers: { 'x-goog-api-key': KEY(), 'Content-Type': 'application/json' }, timeout: 25000 }
     )
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
-    return text.trim() || null
+    const cand = res.data?.candidates?.[0]
+    // Pull text from any/all parts (sometimes split across parts).
+    const parts = cand?.content?.parts || []
+    const text = parts.map(p => p.text || '').join('').trim()
+    if (!text) {
+      logger.error('[gemini] empty text. finishReason=' + (cand?.finishReason || '?') + ' raw=' + JSON.stringify(res.data).slice(0, 400))
+      return null
+    }
+    return text
   } catch (err) {
     const status = err.response?.status
     const msg = err.response?.data?.error?.message || err.message

@@ -55,30 +55,38 @@ router.post('/', async (req, res, next) => {
     // Let Gemini just TALK — plain text, no JSON straitjacket (this is what stops the loop).
     const reply = await chatText(SYSTEM, geminiHistory, { temperature: 1.0 })
 
-    // If Gemini is down, fall back gracefully (don't repeat a canned line forever).
+    // If Gemini is down, fall back gracefully — advance using what the USER said,
+    // not a turn counter (which can be stuck at 0 if history isn't arriving).
     if (!reply) {
-      logger.warn('[concierge] Gemini unavailable — planning from what we have')
+      logger.warn('[concierge] Gemini unavailable — fallback path')
       const intent = mergeIntent(thread, {})
-      if (!intent.categories.length && !intent.vibe && sappoTurns < 1) {
+      const userGaveSomething = intent.categories.length || intent.vibe || intent.cityMention ||
+        (message && message.trim().length > 3 && !/^(yo|hi|hey|hello|sup|alright|hiya|yo!)\W*$/i.test(message.trim()))
+      if (!userGaveSomething) {
         return res.json({ type: 'reply', say: "Hey! Where are you and what are you into — food, history, music, views, hidden gems?", geminiDown: true })
       }
+      // They've told us something — make the plan rather than asking again.
       return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true })
     }
 
-    // Decide whether it's time to build the plan. We let Gemini signal readiness in
-    // its own words, OR the user asked, OR we've chatted enough. Otherwise keep talking.
-    const geminiSignalsReady = /(give me (a sec|two secs|a moment|a min)|let me (sort|sort this|put this together|build|pull this together)|on it|sorting (this|that) now|here'?s (what|the) (i'?m thinking|plan))/i.test(reply)
+    // Decide whether it's time to build the plan. Robust triggers:
+    //  - the user explicitly asked, OR
+    //  - we know enough (they've named an interest/category/vibe) AND we've had a little chat, OR
+    //  - we've gone back and forth enough times (hard cap), OR
+    //  - Gemini clearly signals it's about to plan.
+    const known = mergeIntent(thread, {})
+    const weKnowEnough = !!(known.categories.length || known.vibe || known.raw.length > 25)
+    const geminiSignalsReady = /(give me|let me (sort|put|build|pull)|on it|sorting (this|that)|here'?s (what|the)|i'?ll (sort|put|build))/i.test(reply)
     const enoughChat = sappoTurns >= MAX_QUESTIONS
-    const ready = geminiSignalsReady || userWantsPlanNow || enoughChat
+    const ready = userWantsPlanNow || geminiSignalsReady || enoughChat || (weKnowEnough && sappoTurns >= 1)
 
     if (!ready) {
       // Keep the conversation flowing — just return Gemini's natural reply.
       return res.json({ type: 'reply', say: reply })
     }
 
-    // Time to plan. Extract intent from the whole conversation (keyword-based, light).
-    const intent = mergeIntent(thread, {})
-    return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: reply })
+    // Time to plan.
+    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: reply })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
