@@ -1,9 +1,11 @@
 const express = require('express')
 const { CITIES } = require('../config')
-const { chatText } = require('../clients/gemini')
+const { chatText, buildItinerary } = require('../clients/gemini')
 const { parseIntent } = require('../services/parseIntent')
 const { planNight } = require('../services/planNight')
 const { getWeather } = require('../clients/weather')
+const { query } = require('../db/pool')
+const { findPlace } = require('../clients/google')
 const logger = require('../utils/logger')
 const router = express.Router()
 
@@ -73,7 +75,7 @@ router.post('/', async (req, res, next) => {
       if (!userGaveSomething) {
         return res.json({ type: 'reply', say: "Hey! Where are you and what are you into — food, history, music, views, hidden gems?", geminiDown: true })
       }
-      return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true })
+      return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true, thread })
     }
 
     // GEMINI decides when to plan, by ending with [[PLAN]]. This is the only reliable
@@ -90,7 +92,7 @@ router.post('/', async (req, res, next) => {
 
     // Time to plan.
     const known = mergeIntent(thread, {})
-    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: cleanReply || "Right, let me sort you something…" })
+    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: cleanReply || "Right, let me sort you something…", thread })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
@@ -114,44 +116,145 @@ function mergeIntent(thread, extracted = {}) {
   return merged
 }
 
-async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown }) {
+async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown, thread }) {
   const loc = resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
-  logger.info('[concierge] planning', JSON.stringify({ city: loc.cityName, categories: intent.categories, keywords: intent.keywords, vibe: intent.vibe, budget: intent.budget }))
+  logger.info('[concierge] planning (hybrid)', JSON.stringify({ city: loc.cityName, categories: intent.categories, raw: intent.raw?.slice(0, 60) }))
 
   let weather = null
   try { weather = await getWeather(loc.lat, loc.lng) } catch (e) { logger.error('[concierge] weather skipped:', e.message) }
 
-  // The planner keyword-matches venue names against the user's actual words.
-  const planText = intent.raw || ''
+  // 1. Fetch a relevant shortlist of VERIFIED venues from our DB to offer Gemini.
+  let dbVenues = []
+  try {
+    // Pull a category-DIVERSE shortlist (not 40 hotels) so Gemini has real food/drink/music options.
+    const wantCats = (intent.categories && intent.categories.length)
+      ? intent.categories
+      : ['restaurant', 'bar', 'pub', 'cafe', 'music_venue', 'nightclub', 'attraction']
+    const { rows } = await query(
+      `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
+       FROM venues
+       WHERE city = $1 AND name IS NOT NULL
+         AND category_slug = ANY($2)
+         AND category_slug NOT IN ('lodging','hotel')
+       ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
+       LIMIT 50`,
+      [loc.cityName, wantCats]
+    )
+    dbVenues = rows
+    // if that came back thin, broaden (but still skip hotels)
+    if (dbVenues.length < 8) {
+      const { rows: more } = await query(
+        `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
+         FROM venues WHERE city = $1 AND name IS NOT NULL
+           AND category_slug NOT IN ('lodging','hotel')
+         ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
+         LIMIT 40`,
+        [loc.cityName]
+      )
+      dbVenues = more
+    }
+  } catch (e) { logger.error('[concierge] venue fetch failed:', e.message) }
 
+  // 2. Ask Gemini to build a hybrid itinerary (prefer DB venues, fill gaps with real places).
+  const conversation = (thread || []).slice(-12)
+  const itin = geminiDown ? null : await buildItinerary(SYSTEM, conversation, dbVenues, { weather })
+
+  // 3. If the hybrid build worked, enrich each stop with verified data, coords, photo + map link.
+  if (itin && Array.isArray(itin.stops) && itin.stops.length) {
+    const byId = Object.fromEntries(dbVenues.map(v => [String(v.id), v]))
+    const seen = new Set()
+    const rawStops = itin.stops.filter(s => {
+      const name = (s.dbId != null ? byId[String(s.dbId).replace(/\D/g, '')]?.name : null) || s.name
+      if (!name || seen.has(name.toLowerCase())) return false
+      seen.add(name.toLowerCase()); return true
+    })
+
+    // Build each stop; geocode the "Sappo pick" ones to get real coordinates + a photo.
+    const stops = await Promise.all(rawStops.map(async (s, i) => {
+      const db = s.dbId != null ? byId[String(s.dbId).replace(/\D/g, '')] : null
+      let name = db?.name || s.name
+      let address = db?.address || s.address || null
+      let lat = db?.lat ?? null, lng = db?.lng ?? null
+      let rating = db?.rating ?? null
+      let photoUrl = null
+
+      // For Sappo picks (no DB coords), look the place up so it can be pinned on the map.
+      if ((lat == null || lng == null)) {
+        const found = await findPlace(`${name}, ${address || loc.cityName}`)
+        if (found) {
+          lat = found.lat; lng = found.lng
+          address = found.address || address
+          rating = rating ?? found.rating
+          photoUrl = found.photoUrl
+          if (found.name) name = found.name
+        }
+      }
+
+      const mapQuery = encodeURIComponent(`${name}${address ? ', ' + address : ', ' + loc.cityName}`)
+      return {
+        order: i + 1, name, why: s.why || '', address,
+        category_slug: db?.category_slug || s.category || 'other',
+        rating, lat, lng, photoUrl,
+        verified: !!db,
+        mapUrl: `https://www.google.com/maps/search/?api=1&query=${mapQuery}`,
+      }
+    }))
+
+    // Walking time + distance between consecutive stops (best-effort).
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i], b = stops[i + 1]
+      if (a.lat != null && b.lat != null) {
+        const km = haversineKm(a.lat, a.lng, b.lat, b.lng)
+        if (km != null) {
+          const mins = Math.max(1, Math.round((km / 5) * 60)) // ~5km/h walking
+          stops[i].toNext = { km: Math.round(km * 10) / 10, walkMins: mins }
+        }
+      }
+    }
+
+    if (stops.length) {
+      // Map centre = average of stop coords
+      const pts = stops.filter(s => s.lat != null)
+      const centre = pts.length
+        ? { lat: pts.reduce((a, s) => a + s.lat, 0) / pts.length, lng: pts.reduce((a, s) => a + s.lng, 0) / pts.length }
+        : { lat: loc.lat, lng: loc.lng }
+      return res.json({
+        type: 'plan',
+        say: sayBefore || "Here's what I'm thinking…",
+        city: loc.cityName,
+        title: itin.title || `A day in ${loc.cityName}`,
+        summary: itin.summary || '',
+        reasoning: itin.reasoning || null,
+        tip: itin.tip || null,
+        stops,
+        mapCentre: centre,
+        weather_note: weather?.current ? `${weather.current.temp}°C, ${weather.current.condition}${weather.planningHint?.note ? ' · ' + weather.planningHint.note : ''}` : null,
+        weather: weather ? { temp: weather.current?.temp, condition: weather.current?.condition, icon: weather.current?.icon } : null,
+        geminiDown: geminiDown || false,
+      })
+    }
+  }
+
+  // 4. Fallback to the database-only planner if the hybrid build failed.
   const plan = await planNight({
-    city: loc.cityName,
-    text: planText,
-    vibe: intent.vibe,
-    stops: 3,
-    weather,
+    city: loc.cityName, text: intent.raw || '', vibe: intent.vibe, stops: 3, weather,
     budget: intent.budget ? { budget_level: intent.budget } : null,
-    categories: intent.categories || [],
-    lat: loc.lat, lng: loc.lng,
+    categories: intent.categories || [], lat: loc.lat, lng: loc.lng,
   })
-
   if (plan.error) {
     return res.json({ type: 'reply', say: `I haven't got ${loc.cityName} fully covered yet — want to try Liverpool or Manchester?` })
   }
-
+  // add map links to the fallback stops too
+  const stops = (plan.stops || []).map(s => ({
+    ...s,
+    mapUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${s.name}, ${s.address || loc.cityName}`)}`,
+    verified: true,
+  }))
   return res.json({
-    type: 'plan',
-    say: sayBefore || "Here's what I'm thinking…",
-    city: loc.cityName,
-    title: plan.title,
-    summary: plan.vibe,
-    reasoning: plan.reasoning,
-    cost: plan.cost,
-    stops: plan.stops,
-    gettingHome: plan.gettingHome,
-    tip: plan.tip,
-    weather_note: plan.weatherNote,
-    geminiDown: geminiDown || false,
+    type: 'plan', say: sayBefore || "Here's what I'm thinking…", city: loc.cityName,
+    title: plan.title, summary: plan.vibe, reasoning: plan.reasoning, cost: plan.cost,
+    stops, gettingHome: plan.gettingHome, tip: plan.tip,
+    weather_note: plan.weatherNote, geminiDown: geminiDown || false,
   })
 }
 
@@ -174,3 +277,11 @@ router.get('/test-gemini', async (req, res) => {
 })
 
 module.exports = router
+
+function haversineKm(a, b, c, d) {
+  if ([a, b, c, d].some(x => x == null)) return null
+  const R = 6371, r = x => x * Math.PI / 180
+  const dLat = r(c - a), dLng = r(d - b)
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(h))
+}

@@ -66,4 +66,41 @@ async function fetchVenues(lat, lng, radius) {
   return out
 }
 
-module.exports = { fetchVenues }
+// Look up a place by name + address → returns { lat, lng, address, photoUrl, rating } or null.
+// Used to give Gemini's "Sappo pick" stops real coordinates for the map.
+async function findPlace(textQuery) {
+  if (!config.google.key) return null
+  try {
+    const res = await axios.post(
+      'https://places.googleapis.com/v1/places:searchText',
+      { textQuery, maxResultCount: 1 },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': config.google.key,
+          'X-Goog-FieldMask': 'places.location,places.formattedAddress,places.displayName,places.rating,places.photos',
+        },
+        timeout: 8000,
+      }
+    )
+    const p = res.data?.places?.[0]
+    if (!p?.location) return null
+    let photoUrl = null
+    if (p.photos?.[0]?.name) {
+      photoUrl = `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=600&key=${config.google.key}`
+    }
+    return {
+      lat: p.location.latitude,
+      lng: p.location.longitude,
+      address: p.formattedAddress || null,
+      name: p.displayName?.text || null,
+      rating: p.rating || null,
+      photoUrl,
+    }
+  } catch (e) {
+    logger.error('[google] findPlace failed:', e.response?.status || e.message)
+    return null
+  }
+}
+
+module.exports = { fetchVenues, findPlace }
