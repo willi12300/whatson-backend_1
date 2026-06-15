@@ -187,23 +187,39 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
     return fallbackPlan(city, venues, vibe || mode)
   }
 
-  // 5. Map venueIds back to real venue records (guard against hallucinated ids)
+  // 5. Map venueIds back to real venue records (guard hallucinated AND duplicate ids)
   const byId = Object.fromEntries(venues.map(v => [String(v.id), v]))
   const eventByVenue = {}
   for (const e of events) { if (!eventByVenue[e.venue_id]) eventByVenue[e.venue_id] = e }
-  const stopsOut = (ai.stops || [])
-    .map(s => {
-      const v = byId[String(s.venueId)]
-      if (!v) return null
-      const busy = busyByVenue[v.id] || estimateBusy(v, { when: now, events })
-      const ev = eventByVenue[v.id]
-      return {
-        ...v, order: s.order, label: s.label, why: s.why,
-        busy,
-        eventPrice: ev && !ev.is_free ? (ev.min_price || null) : (ev?.is_free ? 0 : null),
-      }
-    })
-    .filter(Boolean)
+
+  const usedIds = new Set()
+  const buildStop = (v, order, label, why) => {
+    const busy = busyByVenue[v.id] || estimateBusy(v, { when: now, events })
+    const ev = eventByVenue[v.id]
+    return {
+      ...v, order, label, why,
+      busy,
+      eventPrice: ev && !ev.is_free ? (ev.min_price || null) : (ev?.is_free ? 0 : null),
+    }
+  }
+
+  const stopsOut = []
+  for (const s of (ai.stops || [])) {
+    const v = byId[String(s.venueId)]
+    if (!v) continue                          // hallucinated id
+    if (usedIds.has(String(v.id))) continue   // DUPLICATE — skip (was the Blackstock×2 bug)
+    usedIds.add(String(v.id))
+    stopsOut.push(buildStop(v, stopsOut.length + 1, s.label, s.why))
+  }
+  // Backfill with DISTINCT venues if we ended up short.
+  if (stopsOut.length < stops) {
+    for (const v of venues) {
+      if (stopsOut.length >= stops) break
+      if (usedIds.has(String(v.id))) continue
+      usedIds.add(String(v.id))
+      stopsOut.push(buildStop(v, stopsOut.length + 1, stopsOut.length === 0 ? 'First up' : 'Then', 'A solid pick for what you asked for.'))
+    }
+  }
 
   if (!stopsOut.length) return fallbackPlan(city, venues, vibe || mode)
 

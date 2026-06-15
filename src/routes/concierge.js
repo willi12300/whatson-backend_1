@@ -32,7 +32,15 @@ How you work:
 
 You are a TRAVEL COMPANION. Your job is to create experiences and help people discover a place — not to list venues. Think itinerary: a few great stops that flow well, fit their time, and make the most of where they are.
 
-Reply in natural plain text — just talk to them like a friend. Don't use JSON, don't use bullet lists, just chat.`
+Reply in natural plain text — just talk to them like a friend. Don't use JSON, don't use bullet lists, just chat.
+
+VERY IMPORTANT — how to trigger a plan:
+- While you're still chatting, gathering info, or just being friendly, reply normally with NO marker.
+- ONLY when you genuinely have enough to build them a great plan (you know roughly what they want and where), end your message with the exact marker [[PLAN]] on the end.
+- The [[PLAN]] marker is the ONLY thing that builds a plan. If you don't add it, you just keep chatting.
+- Do NOT add [[PLAN]] for small talk, greetings, jokes, or when they're still deciding. If someone says "what's up" or "talk to me" or changes their mind, just chat back warmly — no marker.
+- Example (still chatting): "Ooh nice, three of you! Bowling then drinks sounds class. Whereabouts are you — town centre?"
+- Example (ready): "Love it — leave it with me, I'll sort you a cracker of a night. [[PLAN]]"`
 
 // POST /concierge  { message, history?, selectedCity, lat, lng }
 //   history: full prior thread [{ role:'user'|'sappo', text }]
@@ -49,14 +57,14 @@ router.post('/', async (req, res, next) => {
     }))
     const sappoTurns = history.filter(m => m.role === 'sappo').length
 
-    // Decide if the user clearly wants the plan NOW (so we don't keep chatting).
-    const userWantsPlanNow = /\b(plan|sort|go on then|do it|let'?s go|build it|make it|surprise me|just pick|whatever)\b/i.test(message)
+    // Decide if the user EXPLICITLY wants the plan now (direct request only).
+    const userWantsPlanNow = /\b(make the plan|build the plan|plan it|sort it|do it now|just pick|surprise me|go on then|let'?s go)\b/i.test(message)
 
-    // Let Gemini just TALK — plain text, no JSON straitjacket (this is what stops the loop).
+    // Let Gemini just TALK — plain text. It decides when it's ready to plan by ending
+    // its message with the marker [[PLAN]] (we strip it before showing the user).
     const reply = await chatText(SYSTEM, geminiHistory, { temperature: 1.0 })
 
-    // If Gemini is down, fall back gracefully — advance using what the USER said,
-    // not a turn counter (which can be stuck at 0 if history isn't arriving).
+    // If Gemini is down, fall back gracefully.
     if (!reply) {
       logger.warn('[concierge] Gemini unavailable — fallback path')
       const intent = mergeIntent(thread, {})
@@ -65,28 +73,24 @@ router.post('/', async (req, res, next) => {
       if (!userGaveSomething) {
         return res.json({ type: 'reply', say: "Hey! Where are you and what are you into — food, history, music, views, hidden gems?", geminiDown: true })
       }
-      // They've told us something — make the plan rather than asking again.
       return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true })
     }
 
-    // Decide whether it's time to build the plan. Robust triggers:
-    //  - the user explicitly asked, OR
-    //  - we know enough (they've named an interest/category/vibe) AND we've had a little chat, OR
-    //  - we've gone back and forth enough times (hard cap), OR
-    //  - Gemini clearly signals it's about to plan.
-    const known = mergeIntent(thread, {})
-    const weKnowEnough = !!(known.categories.length || known.vibe || known.raw.length > 25)
-    const geminiSignalsReady = /(give me|let me (sort|put|build|pull)|on it|sorting (this|that)|here'?s (what|the)|i'?ll (sort|put|build))/i.test(reply)
-    const enoughChat = sappoTurns >= MAX_QUESTIONS
-    const ready = userWantsPlanNow || geminiSignalsReady || enoughChat || (weKnowEnough && sappoTurns >= 1)
+    // GEMINI decides when to plan, by ending with [[PLAN]]. This is the only reliable
+    // signal because Gemini is the one actually having the conversation.
+    const geminiWantsPlan = /\[\[PLAN\]\]/i.test(reply)
+    const cleanReply = reply.replace(/\[\[PLAN\]\]/ig, '').trim()
+    const ready = geminiWantsPlan || userWantsPlanNow
+
 
     if (!ready) {
       // Keep the conversation flowing — just return Gemini's natural reply.
-      return res.json({ type: 'reply', say: reply })
+      return res.json({ type: 'reply', say: cleanReply })
     }
 
     // Time to plan.
-    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: reply })
+    const known = mergeIntent(thread, {})
+    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: cleanReply || "Right, let me sort you something…" })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
