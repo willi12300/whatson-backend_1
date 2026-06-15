@@ -50,7 +50,7 @@ module.exports = { generateJSON, chatJSON, chatText, buildItinerary, MODEL }
  * and is told to PREFER our venues but fill gaps with real places it knows (with
  * addresses). Returns { title, summary, stops:[{name, address, why, verified, dbId}] }.
  */
-async function buildItinerary(system, conversation, dbVenues, { temperature = 0.8, weather = null, prefNote = '', localTime = null } = {}) {
+async function buildItinerary(system, conversation, dbVenues, { temperature = 0.8, weather = null, prefNote = '', localTime = null, cityLabel = null } = {}) {
   if (!KEY()) return null
   try {
     const venueLines = dbVenues.map(v =>
@@ -67,7 +67,7 @@ ${venueLines || '(none available for this city/type)'}
 
 ${weather ? `REAL WEATHER right now: ${weather.current?.temp ?? '?'}°C, ${weather.current?.condition || ''}. ${weather.planningHint?.note || ''}\nUse ONLY this real weather data — do NOT invent times or conditions. If it says rain later, you can lean indoor for later stops. If no rain is mentioned, don't claim there is any.` : 'No weather data available — do NOT mention specific weather, times, or rain.'}
 
-Build a 3-stop itinerary that matches what the user ACTUALLY asked for (match their food/drink/activity/music requests — don't substitute unrelated venues like hotels). Rules:
+Build a 3-stop itinerary that matches what the user ACTUALLY asked for (match their food/drink/activity/music requests — don't substitute unrelated venues like hotels).${cityLabel ? ` The user is in ${cityLabel} — all stops MUST be real places in ${cityLabel}.` : ''} Rules:
 - PREFER the verified DB venues above when they fit — reference them by their DB# id in "dbId".
 - If our database doesn't have what they want (e.g. a specific food, live music, a skatepark), use a REAL well-known place you know in this city, with its actual address. Never invent fake places.
 - Respect their time and constraints (e.g. if they've two hours near a station, keep it tight and close).

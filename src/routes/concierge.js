@@ -5,7 +5,7 @@ const { parseIntent } = require('../services/parseIntent')
 const { planNight } = require('../services/planNight')
 const { getWeather } = require('../clients/weather')
 const { query } = require('../db/pool')
-const { findPlace } = require('../clients/google')
+const { findPlace, reverseGeocode } = require('../clients/google')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
 const logger = require('../utils/logger')
 const router = express.Router()
@@ -13,8 +13,7 @@ const router = express.Router()
 // Hard safety rail: never ask more than this many questions before planning.
 const MAX_QUESTIONS = 3
 
-// Find the nearest known city to a set of coordinates (simple great-circle distance).
-// Returns { key, name, lat, lng, distKm } or null.
+// Find the nearest known PRESET city (fallback only, when geocoding is unavailable).
 function nearestCity(lat, lng) {
   if (lat == null || lng == null) return null
   const R = 6371, r = x => x * Math.PI / 180
@@ -28,35 +27,38 @@ function nearestCity(lat, lng) {
   return best
 }
 
-function resolveLocation({ lat, lng, selectedCity, promptCity }) {
-  // Priority:
-  // 1. The user EXPLICITLY said where they are in chat (promptCity) — always wins.
-  // 2. Real GPS coordinates → reverse-geocode to the nearest known city. This OVERRIDES
-  //    any stale selectedCity setting (the bug: app said Manchester, user was in Liverpool).
-  // 3. selectedCity (app setting) as a fallback.
-  // 4. Liverpool as a last resort.
-  let cityName, useLat = lat, useLng = lng
+// GLOBAL location resolution. Works anywhere in the world.
+// Priority:
+// 1. User explicitly said where they are in chat (promptCity) — always wins.
+// 2. Real GPS → reverse-geocode to the ACTUAL city/town (any city on earth).
+// 3. selectedCity (app setting) fallback.
+// 4. Liverpool last resort.
+async function resolveLocation({ lat, lng, selectedCity, promptCity }) {
+  let cityName, country = null, useLat = lat, useLng = lng
 
   if (promptCity) {
     cityName = promptCity
   } else if (lat != null && lng != null) {
-    const near = nearestCity(lat, lng)
-    // Only trust GPS→city if it's plausibly within ~60km of a known city centre.
-    if (near && near.distKm <= 60) {
-      cityName = near.name
+    // Real reverse-geocode — identifies the true city anywhere in the world.
+    const geo = await reverseGeocode(lat, lng)
+    if (geo?.city) {
+      cityName = geo.city
+      country = geo.country
     } else {
-      cityName = selectedCity || 'Liverpool'   // GPS far from any known city — fall back
+      // geocoding failed — fall back to nearest known preset, else selectedCity
+      const near = nearestCity(lat, lng)
+      cityName = (near && near.distKm <= 60) ? near.name : (selectedCity || 'Liverpool')
     }
   } else {
     cityName = selectedCity || 'Liverpool'
   }
 
-  // If we have no GPS, use the chosen city's centre for distance/weather.
+  // No GPS → use the chosen preset city's centre (if known) for weather/distance.
   if (useLat == null || useLng == null) {
     const preset = CITIES[(cityName || '').toLowerCase().replace(/\s+/g, '')]
     if (preset) { useLat = preset.lat; useLng = preset.lng }
   }
-  return { cityName, lat: useLat, lng: useLng }
+  return { cityName, country, lat: useLat, lng: useLng }
 }
 
 const SYSTEM = `You are Sappo — a warm, switched-on local guide who helps travellers and visitors make the most of a place. Someone's arrived in a city (or has a few hours, a day, a weekend) and doesn't know what to do. Your job is to understand what they're after and build them a brilliant day or outing.
@@ -170,8 +172,14 @@ function mergeIntent(thread, extracted = {}) {
 }
 
 async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown, thread, boosts }) {
-  const loc = resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
-  logger.info('[concierge] planning (hybrid)', JSON.stringify({ city: loc.cityName, categories: intent.categories, raw: intent.raw?.slice(0, 60) }))
+  const loc = await resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
+  logger.info('[concierge] planning (hybrid)', JSON.stringify({
+    city: loc.cityName,
+    gpsReceived: (lat != null && lng != null),
+    gps: (lat != null && lng != null) ? `${lat.toFixed(3)},${lng.toFixed(3)}` : null,
+    selectedCity: selectedCity || null,
+    categories: intent.categories,
+  }))
 
   let weather = null
   try { weather = await getWeather(loc.lat, loc.lng) } catch (e) { logger.error('[concierge] weather skipped:', e.message) }
@@ -227,7 +235,8 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
   const prefNote = buildPrefNote(boosts)
   // Current local time for the city (so Gemini suggests time-appropriate places).
   const localTime = cityLocalTime(loc.cityName)
-  const itin = geminiDown ? null : await buildItinerary(SYSTEM, conversation, dbVenues, { weather, prefNote, localTime })
+  const cityLabel = loc.country ? `${loc.cityName}, ${loc.country}` : loc.cityName
+  const itin = geminiDown ? null : await buildItinerary(SYSTEM, conversation, dbVenues, { weather, prefNote, localTime, cityLabel })
 
   // 3. If the hybrid build worked, enrich each stop with verified data, coords, photo + map link.
   if (itin && Array.isArray(itin.stops) && itin.stops.length) {

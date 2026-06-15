@@ -7,6 +7,7 @@ const { query } = require('../db/pool')
 const { getWeather } = require('../clients/weather')
 const { getProfile, plannerBoosts, applySignal } = require('../services/travelProfile')
 const { CITIES } = require('../config')
+const { reverseGeocode } = require('../clients/google')
 const logger = require('../utils/logger')
 const router = express.Router()
 
@@ -66,11 +67,12 @@ router.post('/', async (req, res, next) => {
     const { mode = 'anything', distance = '20min', budget, selectedCity, deviceId } = req.body || {}
     let { lat, lng } = req.body || {}
 
-    // Resolve location: real GPS → nearest city (overrides stale selectedCity); else city centre.
+    // Resolve location: real GPS → reverse-geocode to the actual city (global); else city centre.
     let cityName
     if (lat != null && lng != null) {
-      const near = nearestCity(lat, lng)
-      cityName = (near && near.distKm <= 60) ? near.name : (selectedCity || 'Liverpool')
+      const geo = await reverseGeocode(lat, lng)
+      if (geo?.city) cityName = geo.city
+      else { const near = nearestCity(lat, lng); cityName = (near && near.distKm <= 60) ? near.name : (selectedCity || 'Liverpool') }
     } else {
       cityName = selectedCity || 'Liverpool'
       const preset = CITIES[(cityName || '').toLowerCase().replace(/\s+/g, '')]

@@ -109,4 +109,26 @@ async function findPlace(textQuery) {
   }
 }
 
-module.exports = { fetchVenues, findPlace }
+// Reverse-geocode coordinates → real city/town name, anywhere in the world.
+// Uses the Google Geocoding API (same key as Places). Returns { city, country, formatted } or null.
+async function reverseGeocode(lat, lng) {
+  if (!config.google.key || lat == null || lng == null) return null
+  try {
+    const res = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
+      params: { latlng: `${lat},${lng}`, key: config.google.key, result_type: 'locality|postal_town|administrative_area_level_2' },
+      timeout: 8000,
+    })
+    const result = res.data?.results?.[0]
+    if (!result) return null
+    const comp = result.address_components || []
+    const find = (type) => comp.find(c => c.types.includes(type))?.long_name || null
+    const city = find('locality') || find('postal_town') || find('administrative_area_level_2')
+    const country = find('country')
+    return city ? { city, country, formatted: result.formatted_address } : null
+  } catch (e) {
+    logger.error('[google] reverseGeocode failed:', e.response?.status || e.message)
+    return null
+  }
+}
+
+module.exports = { fetchVenues, findPlace, reverseGeocode }
