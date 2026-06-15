@@ -12,8 +12,14 @@ const CATEGORY_KEYWORDS = {
   bar: ['cocktail', 'cocktails', 'bar', 'drinks', 'wine', 'gin'],
   pub: ['pub', 'pint', 'pints', 'beer', 'ale', 'boozer'],
   nightclub: ['club', 'clubbing', 'nightclub', 'dance', 'rave', 'dancing'],
-  music_venue: ['live music', 'gig', 'band', 'karaoke', 'concert', 'music venue', 'jazz'],
+  music_venue: ['live music', 'gig', 'band', 'karaoke', 'concert', 'music venue', 'jazz', 'music'],
   comedy: ['comedy', 'stand up', 'stand-up', 'laughs'],
+  // tourist / traveller categories
+  museum: ['museum', 'exhibition', 'history', 'historical', 'culture', 'cultural'],
+  gallery: ['gallery', 'art', 'galleries', 'exhibit'],
+  landmark: ['landmark', 'landmarks', 'cathedral', 'church', 'monument', 'heritage', 'sights', 'sightseeing', 'iconic'],
+  park: ['park', 'gardens', 'green space', 'nature', 'outdoors'],
+  attraction: ['attraction', 'attractions', 'things to do', 'tourist', 'explore', 'views', 'viewpoint', 'scenic'],
 }
 
 // vibe keywords → planner mode

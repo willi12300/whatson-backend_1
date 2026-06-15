@@ -3,7 +3,13 @@ const { config } = require('../config')
 const { sleep } = require('../utils/helpers')
 const logger = require('../utils/logger')
 
-const TYPES = ['bar', 'night_club', 'restaurant', 'cafe', 'pub']
+const TYPES = [
+  // food & drink
+  'bar', 'night_club', 'restaurant', 'cafe', 'pub',
+  // tourist attractions & culture (for travellers)
+  'tourist_attraction', 'museum', 'art_gallery', 'park',
+  'historical_landmark', 'church', 'zoo', 'aquarium',
+]
 
 async function searchType(lat, lng, radius, type) {
   try {

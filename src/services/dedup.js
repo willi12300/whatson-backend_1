@@ -67,12 +67,21 @@ function deriveCategory(c) {
   const types = c.types || []
   const primary = (c.primaryType || '').toLowerCase()
   const cats = (c.categories || []).join(' ').toLowerCase()
-  if (types.includes('night_club') || primary.includes('night_club')) return 'nightclub'
-  if (types.includes('bar') || primary.includes('bar') || cats.includes('bar')) return 'bar'
-  if (types.includes('pub') || primary.includes('pub') || cats.includes('pub')) return 'pub'
-  if (types.includes('cafe') || primary.includes('cafe') || cats.includes('coffee')) return 'cafe'
-  if (types.includes('restaurant') || primary.includes('restaurant') || cats.includes('restaurant')) return 'restaurant'
+  const has = (t) => types.includes(t) || primary.includes(t)
+  // nightlife & food
+  if (has('night_club')) return 'nightclub'
+  if (has('bar') || cats.includes('bar')) return 'bar'
+  if (has('pub') || cats.includes('pub')) return 'pub'
+  if (has('cafe') || cats.includes('coffee')) return 'cafe'
+  if (has('restaurant') || cats.includes('restaurant')) return 'restaurant'
   if (cats.includes('music')) return 'music_venue'
+  // tourist attractions & culture
+  if (has('museum')) return 'museum'
+  if (has('art_gallery') || cats.includes('gallery')) return 'gallery'
+  if (has('park') || has('national_park')) return 'park'
+  if (has('zoo') || has('aquarium')) return 'attraction'
+  if (has('church') || has('place_of_worship') || has('historical_landmark') || has('monument')) return 'landmark'
+  if (has('tourist_attraction')) return 'attraction'
   return 'other'
 }
 

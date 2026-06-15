@@ -41,8 +41,9 @@ VERY IMPORTANT — how to trigger a plan:
 - ONLY when you genuinely have enough to build them a great plan (you know roughly what they want and where), end your message with the exact marker [[PLAN]] on the end.
 - The [[PLAN]] marker is the ONLY thing that builds a plan. If you don't add it, you just keep chatting.
 - Do NOT add [[PLAN]] for small talk, greetings, jokes, or when they're still deciding. If someone says "what's up" or "talk to me" or changes their mind, just chat back warmly — no marker.
-- Example (still chatting): "Ooh nice, three of you! Bowling then drinks sounds class. Whereabouts are you — town centre?"
-- Example (ready): "Love it — leave it with me, I'll sort you a cracker of a night. [[PLAN]]"`
+- CRUCIAL: When you add [[PLAN]], your message must be a SHORT, warm hand-off ONLY — do NOT name specific venues, places, or describe the itinerary in your text. The actual plan (with the real venues) is built and shown separately as a card right after. If you name places in your text they'll clash with the card. Just say something like "Love it — give me two secs to sort you a cracker." then [[PLAN]].
+- Example (still chatting, no venues decided yet): "Ooh nice, three of you! Bowling then drinks sounds class. Whereabouts are you — town centre?"
+- Example (ready — short hand-off, NO venue names): "Perfect, leave it with me — sorting you something brilliant now. [[PLAN]]"`
 
 // POST /concierge  { message, history?, selectedCity, lat, lng }
 //   history: full prior thread [{ role:'user'|'sappo', text }]
@@ -92,7 +93,12 @@ router.post('/', async (req, res, next) => {
 
     // Time to plan.
     const known = mergeIntent(thread, {})
-    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: cleanReply || "Right, let me sort you something…", thread })
+    // If Gemini's hand-off text is long/descriptive (likely naming venues that would
+    // clash with the card), replace it with a clean short hand-off line.
+    const handoff = (cleanReply && cleanReply.length <= 140 && cleanReply.split(/\s+/).length <= 26)
+      ? cleanReply
+      : "Love it — give me two secs to sort you something cracking…"
+    return await makePlan(res, { selectedCity, lat, lng, intent: known, sayBefore: handoff, thread })
   } catch (err) { logger.error('[concierge] error:', err.message); next(err) }
 })
 
@@ -129,7 +135,7 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
     // Pull a category-DIVERSE shortlist (not 40 hotels) so Gemini has real food/drink/music options.
     const wantCats = (intent.categories && intent.categories.length)
       ? intent.categories
-      : ['restaurant', 'bar', 'pub', 'cafe', 'music_venue', 'nightclub', 'attraction']
+      : ['restaurant', 'bar', 'pub', 'cafe', 'music_venue', 'attraction', 'museum', 'landmark', 'gallery', 'park']
     const { rows } = await query(
       `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
        FROM venues
