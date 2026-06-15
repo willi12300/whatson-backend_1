@@ -147,7 +147,7 @@ Respond with JSON only in this exact shape:
   "reasoning": "one or two sentences like a mate explaining the plan — mention the real things you balanced (budget, weather, kept it chilled, avoided busy spots). Specific, not generic.",
   "tip": "one genuinely useful insider tip"
 }
-Rules: pick exactly ${stops} stops from the list, ordered as a sensible progression (food/drinks first, livelier later). ONLY use venueIds that appear above — never anything else. Prefer higher-scored venues but build a coherent route. Respect budget and crowd preferences. Every bit of text must sound like a real warm person, never marketing copy. Keep consecutive stops reasonably close.`
+Rules: pick exactly ${stops} DISTINCT stops from the list (never repeat the same venue twice), ordered as a sensible progression (food/drinks first, livelier later). ONLY use venueIds that appear above — never anything else, and each venueId at most once. Prefer higher-scored venues but build a coherent route. Respect budget and crowd preferences. Every bit of text must sound like a real warm person, never marketing copy. Keep consecutive stops reasonably close.`
 
   // 4. Ask Gemini
   const ai = await generateJSON(prompt, { temperature: mode === 'chaos' ? 1.0 : 0.9 })
@@ -156,27 +156,41 @@ Rules: pick exactly ${stops} stops from the list, ordered as a sensible progress
     return fallbackPlan(city, venues, vibe || mode)
   }
 
-  // 5. Map venueIds back to real venue records (guard against hallucinated ids)
+  // 5. Map venueIds back to real venue records (guard against hallucinated AND duplicate ids)
   const byId = Object.fromEntries(venues.map(v => [String(v.id), v]))
   const eventByVenue = {}
   for (const e of events) { if (!eventByVenue[e.venue_id]) eventByVenue[e.venue_id] = e }
-  const stopsOut = (ai.stops || [])
-    .map(s => {
-      const v = byId[String(s.venueId)]
-      if (!v) return null
-      const busy = busyByVenue[v.id] || estimateBusy(v, { when: now, events })
-      const ev = eventByVenue[v.id]
-      // build a concrete "why chosen" — Gemini's reason, backed by the engine's facts
-      const engineReasons = reasonsById[String(v.id)] || []
-      const why = s.why && s.why.length > 8 ? s.why : (engineReasons.length ? `Chosen because it ${engineReasons.slice(0, 3).join(', ')}.` : 'A solid match for what you asked for.')
-      return {
-        ...v, order: s.order, label: s.label, why,
-        whyFactors: engineReasons,
-        busy,
-        eventPrice: ev && !ev.is_free ? (ev.min_price || null) : (ev?.is_free ? 0 : null),
-      }
-    })
-    .filter(Boolean)
+
+  const usedIds = new Set()
+  const makeStop = (v, order, label, whyText) => {
+    const busy = busyByVenue[v.id] || estimateBusy(v, { when: now, events })
+    const ev = eventByVenue[v.id]
+    const engineReasons = reasonsById[String(v.id)] || []
+    const why = whyText && whyText.length > 8 ? whyText : (engineReasons.length ? `Chosen because it ${engineReasons.slice(0, 3).join(', ')}.` : 'A solid match for what you asked for.')
+    return {
+      ...v, order, label, why, whyFactors: engineReasons, busy,
+      eventPrice: ev && !ev.is_free ? (ev.min_price || null) : (ev?.is_free ? 0 : null),
+    }
+  }
+
+  let stopsOut = []
+  for (const s of (ai.stops || [])) {
+    const v = byId[String(s.venueId)]
+    if (!v) continue                       // hallucinated id — skip
+    if (usedIds.has(String(v.id))) continue // DUPLICATE — skip (this was the bug)
+    usedIds.add(String(v.id))
+    stopsOut.push(makeStop(v, stopsOut.length + 1, s.label, s.why))
+  }
+
+  // Backfill from the scored shortlist if Gemini gave us too few distinct venues.
+  if (stopsOut.length < stops) {
+    for (const cand of venues) {
+      if (stopsOut.length >= stops) break
+      if (usedIds.has(String(cand.id))) continue
+      usedIds.add(String(cand.id))
+      stopsOut.push(makeStop(cand, stopsOut.length + 1, stopsOut.length === 0 ? 'First up' : 'Then', null))
+    }
+  }
 
   if (!stopsOut.length) return fallbackPlan(city, venues, vibe || mode)
 
