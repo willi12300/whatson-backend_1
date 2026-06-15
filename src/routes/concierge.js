@@ -58,12 +58,29 @@ router.post('/', async (req, res, next) => {
 
     // Let Gemini run the conversation with full context.
     let brain = await chatJSON(SYSTEM, geminiHistory, { temperature: 0.95 })
+    const geminiWorking = !!(brain && brain.say)
 
-    // Fallback if Gemini is unavailable: use keyword parse + plan straight away.
-    if (!brain || !brain.say) {
-      logger.warn('[concierge] Gemini unavailable, planning from keywords')
+    // Fallback if Gemini is unavailable: have a basic scripted chat, don't just dump a plan.
+    if (!geminiWorking) {
+      logger.warn('[concierge] Gemini unavailable — using scripted fallback')
       const intent = parseIntent(message)
-      return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you a plan…" })
+      const hasEnough = (intent.categories?.length || intent.vibe)
+      // First, gather a little before planning — don't plan from "yo".
+      if (!hasEnough && sappoTurns < 1) {
+        return res.json({
+          type: 'reply',
+          say: "Hey! What are you in the mood for — food, drinks, a night out, something chilled?",
+          geminiDown: true,
+        })
+      }
+      if (!hasEnough && sappoTurns < 2) {
+        return res.json({
+          type: 'reply',
+          say: "Nice — and roughly what budget are we working with? Cheap and cheerful, comfortable, or treat yourselves?",
+          geminiDown: true,
+        })
+      }
+      return await makePlan(res, { selectedCity, lat, lng, intent: mergeIntent(thread, {}), sayBefore: "Right, let me sort you something…", geminiDown: true })
     }
 
     // SAFETY RAIL: if we've already asked enough, force a plan regardless.
@@ -104,7 +121,7 @@ function mergeIntent(thread, extracted = {}) {
   return merged
 }
 
-async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore }) {
+async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown }) {
   const loc = resolveLocation({ lat, lng, selectedCity, promptCity: intent.cityMention })
   logger.info('[concierge] planning', JSON.stringify({ city: loc.cityName, categories: intent.categories, vibe: intent.vibe, budget: intent.budget, timing: intent.timing }))
 
@@ -138,7 +155,26 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore }) {
     gettingHome: plan.gettingHome,
     tip: plan.tip,
     weather_note: plan.weatherNote,
+    geminiDown: geminiDown || false,
   })
 }
+
+// GET /concierge/test-gemini — quick health check you can hit in a browser.
+// Tells you if Gemini is actually responding on this server.
+router.get('/test-gemini', async (req, res) => {
+  try {
+    const out = await chatJSON(
+      'You are a test. Reply ONLY with JSON: {"say":"a friendly hello","ready_to_plan":false,"extracted":{}}',
+      [{ role: 'user', text: 'say hi' }],
+      { temperature: 0.5 }
+    )
+    if (out && out.say) {
+      return res.json({ gemini: 'WORKING ✓', reply: out.say, keyPresent: !!process.env.GEMINI_API_KEY })
+    }
+    return res.json({ gemini: 'NOT WORKING ✗', reply: null, keyPresent: !!process.env.GEMINI_API_KEY, hint: 'Gemini returned nothing — likely missing/invalid GEMINI_API_KEY or model name rejected. Check Railway logs for "Gemini chat failed".' })
+  } catch (e) {
+    return res.json({ gemini: 'ERROR ✗', error: e.message, keyPresent: !!process.env.GEMINI_API_KEY })
+  }
+})
 
 module.exports = router
