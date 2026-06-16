@@ -15,6 +15,7 @@ const router = express.Router()
 const MODE_CATEGORIES = {
   food:        ['restaurant', 'cafe'],
   drinks:      ['bar', 'pub'],
+  live_event:  ['music_venue', 'bar', 'nightclub'],   // events prioritised separately
   hidden_gem:  ['bar', 'restaurant', 'cafe', 'attraction', 'gallery'],
   tourist_spot:['attraction', 'landmark', 'museum'],
   date_night:  ['restaurant', 'bar'],
@@ -61,10 +62,10 @@ function isOpenNow(openingHours, when = new Date()) {
   } catch { return null }
 }
 
-// POST /roulette { mode, distance, budget, lat, lng, selectedCity, deviceId }
+// POST /roulette { mode, distance, budget, who, vibe, spinMode, lat, lng, selectedCity, deviceId }
 router.post('/', async (req, res, next) => {
   try {
-    const { mode = 'anything', distance = '20min', budget, selectedCity, deviceId } = req.body || {}
+    const { mode = 'anything', distance = '20min', budget, who, vibe, spinMode = 'discover', selectedCity, deviceId } = req.body || {}
     let { lat, lng } = req.body || {}
 
     // Resolve location: real GPS → reverse-geocode to the actual city (global); else city centre.
@@ -196,15 +197,21 @@ router.post('/', async (req, res, next) => {
     }).filter(s => !s.reject && s.score > 0)
 
     // ── BALANCED POOL: 40% events · 40% quality venues · 20% hidden gems ──
+    // For "live_event" mode, weight heavily toward events. "lively"/"adventure" vibe nudges events up.
     scoredEvents.sort((a, b) => b.score - a.score)
     const gems = scoredVenues.filter(s => s.isGem).sort((a, b) => b.score - a.score)
     const regular = scoredVenues.filter(s => !s.isGem).sort((a, b) => b.score - a.score)
 
     const POOL = 10
+    let eventShare = 0.4, venueShare = 0.4, gemShare = 0.2
+    if (mode === 'live_event') { eventShare = 0.8; venueShare = 0.15; gemShare = 0.05 }
+    else if (vibe === 'lively' || vibe === 'adventure') { eventShare = 0.5; venueShare = 0.35; gemShare = 0.15 }
+    else if (vibe === 'chill') { eventShare = 0.25; venueShare = 0.45; gemShare = 0.3 }
+
     const pool = [
-      ...scoredEvents.slice(0, Math.round(POOL * 0.4)),
-      ...regular.slice(0, Math.round(POOL * 0.4)),
-      ...gems.slice(0, Math.round(POOL * 0.2)),
+      ...scoredEvents.slice(0, Math.round(POOL * eventShare)),
+      ...regular.slice(0, Math.round(POOL * venueShare)),
+      ...gems.slice(0, Math.round(POOL * gemShare)),
     ]
     // backfill to POOL size from whatever's best if a bucket was thin
     if (pool.length < POOL) {
