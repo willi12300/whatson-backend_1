@@ -82,6 +82,7 @@ router.post('/', async (req, res, next) => {
     const cats = MODE_CATEGORIES[mode] || MODE_CATEGORIES.anything
     const radiusM = DISTANCE_M[distance] || 1600
     const when = new Date()
+    const debug = { hotelsRejected: 0, venueCandidates: 0, eventsSkiddle: 0, eventsEventbrite: 0, eventsTicketmaster: 0, eventsOther: 0 }
 
     // weather (for rainy_day / outdoor handling)
     let weather = null
@@ -92,78 +93,179 @@ router.post('/', async (req, res, next) => {
     const pkey = req.userId ? { userId: req.userId } : (deviceId ? { deviceId } : null)
     if (pkey) { try { boosts = plannerBoosts(await getProfile(pkey)) } catch {} }
 
-    // Pull candidate venues in the right categories & city.
-    const { rows: venues } = await query(
+    // ── HARD BLACKLIST: never let accommodation through (unless mode is explicitly lodging) ──
+    const BLACKLIST_NAME = ['hotel', 'hostel', 'travelodge', 'premier inn', 'aparthotel', 'guest house', 'motel', 'serviced apartment', 'b&b']
+    const BLACKLIST_CAT = ['lodging', 'hotel', 'accommodation', 'apartment', 'real_estate', 'rental']
+    const isBlacklisted = (name, cat) => {
+      if (BLACKLIST_CAT.includes(cat)) return true
+      const n = (name || '').toLowerCase()
+      return BLACKLIST_NAME.some(w => n.includes(w))
+    }
+
+    // ── 1. VENUE CANDIDATES (food/drink/attractions) ──
+    const { rows: rawVenues } = await query(
       `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours, website
        FROM venues
        WHERE city = $1 AND name IS NOT NULL
          AND category_slug = ANY($2)
-         AND category_slug NOT IN ('lodging','hotel')
-       LIMIT 300`,
+       LIMIT 400`,
       [cityName, cats]
     )
-    if (!venues.length) return res.json({ error: 'no_venues', message: `No spots for ${cityName} yet — try Liverpool or Manchester.` })
+    const venues = rawVenues.filter(v => {
+      if (isBlacklisted(v.name, v.category_slug)) { debug.hotelsRejected++; return false }
+      return true
+    })
+    debug.venueCandidates = venues.length
 
-    // Score + filter.
+    // ── 2. EVENT CANDIDATES (Skiddle/Eventbrite/Ticketmaster) happening soon ──
+    let events = []
+    try {
+      const { rows } = await query(
+        `SELECT e.id, e.name, e.category, e.genre, e.starts_at, e.is_free, e.min_price, e.ticket_url,
+                e.image_url, v.lat, v.lng, v.name AS venue_name, v.address,
+                (SELECT provider FROM event_sources es WHERE es.event_id = e.id LIMIT 1) AS provider
+         FROM events e LEFT JOIN venues v ON v.id = e.venue_id
+         WHERE v.city = $1 AND e.starts_at >= now() AND e.starts_at <= now() + interval '14 days'
+           AND e.status = 'active'
+         ORDER BY e.starts_at ASC LIMIT 60`,
+        [cityName]
+      )
+      events = rows
+      for (const e of rows) {
+        const p = (e.provider || '').toLowerCase()
+        if (p.includes('skiddle')) debug.eventsSkiddle++
+        else if (p.includes('eventbrite')) debug.eventsEventbrite++
+        else if (p.includes('ticketmaster')) debug.eventsTicketmaster++
+        else debug.eventsOther++
+      }
+    } catch (e) { logger.error('[roulette] events fetch failed:', e.message) }
+
+    // ── Score VENUES ──
     const wantHidden = mode === 'hidden_gem'
     const wantIndoor = mode === 'rainy_day' || weather?.planningHint?.mode === 'indoor'
-    const scored = venues.map(v => {
+    const scoredVenues = venues.map(v => {
       let score = 0, reasons = [], reject = false
-      // distance
       const km = haversineKm(lat, lng, v.lat, v.lng)
       if (km != null) {
-        if (km * 1000 > radiusM * 1.25) { reject = true }       // outside range
-        else { score += Math.max(0, 12 - km * 4); if (km * 1000 <= radiusM) reasons.push('nearby') }
+        if (km * 1000 > radiusM * 1.25) reject = true
+        else { score += Math.max(0, 25 - km * 8); if (km * 1000 <= radiusM) reasons.push('nearby') }   // distance up to 25
       }
-      // open now (never show closed)
       const open = isOpenNow(v.opening_hours, when)
-      if (open === false) { reject = true }
+      if (open === false) reject = true
       else if (open === true) { score += 10; reasons.push('open now') }
-      // rating
-      if (v.rating) { score += Math.min(v.rating * 3, 15); if (v.rating >= 4.4) reasons.push('highly rated') }
-      score += Math.min((v.rating_count || 0) / 300, 5)
-      // budget
-      if (budget === 'cheap') { if (v.price_level && v.price_level <= 2) { score += 8; reasons.push('good value') } else if (v.price_level >= 3) { score -= 12 } }
+      if (v.rating) { score += Math.min(v.rating * 3, 15); if (v.rating >= 4.4) reasons.push('highly rated') }   // rating up to 15
+      score += Math.min((v.rating_count || 0) / 400, 5)
+      // relevance to mode
+      if ((MODE_CATEGORIES[mode] || []).includes(v.category_slug)) { score += 25; reasons.push('matches your vibe') }
+      if (budget === 'cheap') { if (v.price_level && v.price_level <= 2) { score += 8; reasons.push('good value') } else if (v.price_level >= 3) score -= 12 }
       if (budget === 'treat') { if (v.price_level >= 3) { score += 8; reasons.push('a proper treat') } }
-      // hidden gem: favour lesser-known quality, penalise tourist traps
       if (wantHidden) {
-        if ((v.rating_count || 0) > 2500) { score -= 12 }
-        else if ((v.rating_count || 0) < 500 && v.rating >= 4.3) { score += 12; reasons.push('a real local gem') }
+        if ((v.rating_count || 0) > 2500) score -= 12
+        else if ((v.rating_count || 0) < 600 && v.rating >= 4.3) { score += 14; reasons.push('a real local gem') }
       }
-      // rainy day / indoor
-      if (wantIndoor && ['park', 'attraction'].includes(v.category_slug)) score -= 8
-      // profile boost
+      if (wantIndoor && ['park'].includes(v.category_slug)) score -= 8
       if (boosts?.categoryBoost?.[v.category_slug]) score += Math.min(boosts.categoryBoost[v.category_slug], 10)
-      return { v, score, reasons, reject, km, open }
-    }).filter(s => !s.reject && s.score > 0).sort((a, b) => b.score - a.score)
+      const isGem = (v.rating_count || 0) < 600 && (v.rating || 0) >= 4.3
+      return { kind: 'venue', v, score, reasons, reject, km, open, isGem }
+    }).filter(s => !s.reject && s.score > 0)
 
-    if (!scored.length) return res.json({ error: 'no_matches', message: "Nothing open and nearby matched — try a wider distance or different mode." })
+    // ── Score EVENTS ──
+    const scoredEvents = events.map(e => {
+      let score = 0, reasons = [], reject = false
+      const km = (e.lat != null) ? haversineKm(lat, lng, e.lat, e.lng) : null
+      if (km != null) {
+        if (km * 1000 > radiusM * 2) reject = true                    // events allow a bit more travel
+        else score += Math.max(0, 25 - km * 6)
+      }
+      // happening soon (today/tonight/this week) — big boost
+      const hrs = (new Date(e.starts_at) - when) / 3600000
+      if (hrs >= 0 && hrs <= 12) { score += 30; reasons.push('on today') }
+      else if (hrs <= 48) { score += 22; reasons.push('on soon') }
+      else if (hrs <= 24 * 7) { score += 12; reasons.push('this week') }
+      // event source trust
+      const p = (e.provider || '').toLowerCase()
+      if (p.includes('skiddle') || p.includes('eventbrite') || p.includes('ticketmaster')) { score += 18; reasons.push('live event') }
+      else score += 8
+      // relevance to mode
+      const cg = `${e.category || ''} ${e.genre || ''}`.toLowerCase()
+      if (mode === 'drinks' && /club|dj|party|bar/.test(cg)) { score += 25; reasons.push('matches your vibe') }
+      if (mode === 'date_night' && /music|comedy|theatre|live/.test(cg)) { score += 20; reasons.push('great for a date') }
+      if (mode === 'anything') score += 10
+      if (budget === 'cheap' && e.is_free) { score += 10; reasons.push('free') }
+      return { kind: 'event', e, score, reasons, reject, km }
+    }).filter(s => !s.reject && s.score > 0)
 
-    // Take top 10 good matches, then RANDOMLY pick one (the roulette feel).
-    const top = scored.slice(0, 10)
-    const pick = top[Math.floor(Math.random() * top.length)]
+    // ── BALANCED POOL: 40% events · 40% quality venues · 20% hidden gems ──
+    scoredEvents.sort((a, b) => b.score - a.score)
+    const gems = scoredVenues.filter(s => s.isGem).sort((a, b) => b.score - a.score)
+    const regular = scoredVenues.filter(s => !s.isGem).sort((a, b) => b.score - a.score)
+
+    const POOL = 10
+    const pool = [
+      ...scoredEvents.slice(0, Math.round(POOL * 0.4)),
+      ...regular.slice(0, Math.round(POOL * 0.4)),
+      ...gems.slice(0, Math.round(POOL * 0.2)),
+    ]
+    // backfill to POOL size from whatever's best if a bucket was thin
+    if (pool.length < POOL) {
+      const rest = [...scoredEvents, ...regular, ...gems]
+        .filter(x => !pool.includes(x))
+        .sort((a, b) => b.score - a.score)
+      pool.push(...rest.slice(0, POOL - pool.length))
+    }
+    debug.finalPool = pool.length
+
+    logger.info('[roulette] ' + JSON.stringify({ city: cityName, mode, ...debug }))
+
+    if (!pool.length) return res.json({ error: 'no_matches', message: "Nothing good open and nearby right now — try a wider distance or different mode.", debug })
+
+    // RANDOM pick from the balanced top pool.
+    const pick = pool[Math.floor(Math.random() * pool.length)]
+
+    // ── Build the response (venue OR event) ──
+    if (pick.kind === 'event') {
+      const e = pick.e
+      const walkMin = pick.km != null ? Math.max(1, Math.round((pick.km / 5) * 60)) : null
+      const whyBits = [...new Set(pick.reasons)]
+      return res.json({
+        title: e.name,
+        type: 'Live event' + (e.venue_name ? ` · ${e.venue_name}` : ''),
+        distance: walkMin != null ? `${walkMin} min walk` : null,
+        estimated_cost: e.is_free ? 'Free' : (e.min_price ? `from £${e.min_price}` : '££'),
+        why: `Chosen because it's ${whyBits.join(', ')} — something exciting happening near you.`,
+        when: e.starts_at,
+        source: cap(pick.e.provider) || 'Event',
+        lat: e.lat, lng: e.lng, address: e.address || null,
+        google_maps_url: e.ticket_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${e.venue_name || e.name}, ${cityName}`)}`,
+        is_event: true,
+        actions: ['Let\u2019s Go', 'Spin Again', 'Add to Plan'],
+        debug,
+      })
+    }
+
     const v = pick.v
-
     const walkMin = pick.km != null ? Math.max(1, Math.round((pick.km / 5) * 60)) : null
     const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${v.name}, ${v.address || cityName}`)}`
     const whyBits = [...new Set(pick.reasons)]
-    const why = `Chosen because it ${whyBits.length ? whyBits.join(', ') : 'fits what you fancied'} — a great shout for ${mode.replace('_', ' ')}.`
-
     return res.json({
       title: v.name,
       type: prettyType(v.category_slug),
       distance: walkMin != null ? `${walkMin} min walk` : null,
       estimated_cost: v.price_level ? PRICE_LABEL[v.price_level] : '££',
-      why,
+      why: `Chosen because it ${whyBits.length ? whyBits.join(', ') : 'fits what you fancied'} — a great shout for ${mode.replace('_', ' ')}.`,
       rating: v.rating || null,
       lat: v.lat, lng: v.lng,
       address: v.address || null,
+      source: 'Sappo',
       google_maps_url: mapUrl,
       venueId: v.id,
       actions: ['Let\u2019s Go', 'Spin Again', 'Add to Plan'],
+      debug,
     })
   } catch (err) { logger.error('[roulette] error:', err.message); next(err) }
 })
+
+function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s }
 
 function prettyType(slug) {
   return ({
