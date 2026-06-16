@@ -67,7 +67,7 @@ function walkText(m) {
 
 // Main: return nearby venues scored proximity-first.
 // opts: { lat, lng, categories?, radius?, openNowOnly?, limit?, city? }
-async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowOnly = false, limit = 12, city = null }) {
+async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowOnly = false, limit = 12, city = null, excludeLodging = false }) {
   if (lat == null || lng == null) return { error: 'no_location' }
 
   // bounding box prefilter for speed
@@ -77,6 +77,14 @@ async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowO
   const where = ['lat BETWEEN $1 AND $2', 'lng BETWEEN $3 AND $4', 'name IS NOT NULL', "category_slug NOT IN ('lodging','hotel')"]
   if (categories.length) { params.push(categories); where.push(`category_slug = ANY($${params.length})`) }
   if (city) { params.push(city); where.push(`city = $${params.length}`) }
+  // Some hotels are mis-categorised (as bar/restaurant because they have one).
+  // For food/drink/gem sections, also exclude by name (reliable ILIKE patterns).
+  if (excludeLodging) {
+    for (const word of ['hotel', 'hostel', 'travelodge', 'premier inn', 'aparthotel', 'guest house']) {
+      params.push(`%${word}%`)
+      where.push(`name NOT ILIKE $${params.length}`)
+    }
+  }
 
   const { rows } = await query(
     `SELECT id,name,category_slug,lat,lng,address,rating,rating_count,price_level,opening_hours,website,cover_photo,photos

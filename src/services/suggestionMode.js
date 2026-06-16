@@ -16,7 +16,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
   if (haveGPS) {
     const food = await nearbySearch({
       lat, lng, categories: ['restaurant', 'cafe', 'bar', 'pub'],
-      radius: 2000, limit: 6, city: cityName,
+      radius: 2000, limit: 6, city: cityName, excludeLodging: true,
     })
     if (food.results?.length) {
       sections.push({
@@ -42,7 +42,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
     // C) HIDDEN GEMS — quality but lesser-known (lower review counts, high rating)
     const gems = await nearbySearch({
       lat, lng, categories: ['restaurant', 'cafe', 'bar', 'gallery', 'attraction'],
-      radius: 2500, limit: 20, city: cityName,
+      radius: 2500, limit: 20, city: cityName, excludeLodging: true,
     })
     const hidden = (gems.results || [])
       .filter(c => c.rating >= 4.3 && (c.rating_count || 0) < 800)
