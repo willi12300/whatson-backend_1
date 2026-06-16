@@ -2,7 +2,25 @@ const express = require('express')
 const { query } = require('../db/pool')
 const { distanceMeters } = require('../utils/helpers')
 const { nearbySearch } = require('../services/nearbySearch')
+const { fetchVenues } = require('../clients/google')
 const router = express.Router()
+
+// GET /venues/test-google — quick health check for the Places API (New).
+// Hit this in a browser after enabling Places API (New) to confirm it works.
+router.get('/test-google', async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat) || 53.4084   // Liverpool default
+    const lng = parseFloat(req.query.lng) || -2.9916
+    const venues = await fetchVenues(lat, lng, 2000)
+    if (venues && venues.length) {
+      return res.json({ google: 'WORKING ✓', count: venues.length, sample: venues.slice(0, 3).map(v => v.name), keyPresent: !!(process.env.GOOGLE_PLACES_API_KEY) })
+    }
+    return res.json({ google: 'NOT WORKING ✗', count: 0, keyPresent: !!(process.env.GOOGLE_PLACES_API_KEY), hint: 'Enable "Places API (New)" in Google Cloud and ensure the key allows it. Check Railway logs for "API keys are not supported".' })
+  } catch (e) {
+    return res.json({ google: 'ERROR ✗', error: e.message, keyPresent: !!(process.env.GOOGLE_PLACES_API_KEY) })
+  }
+})
+
 
 // GET /venues/nearby?lat=&lng=&categories=restaurant,cafe&radius=&openNow=&limit=
 // Proximity-first nearby search (distance 45% · relevance 25% · rating 20% · open 10%).
