@@ -1,7 +1,29 @@
 const express = require('express')
 const { query } = require('../db/pool')
 const { distanceMeters } = require('../utils/helpers')
+const { nearbySearch } = require('../services/nearbySearch')
 const router = express.Router()
+
+// GET /venues/nearby?lat=&lng=&categories=restaurant,cafe&radius=&openNow=&limit=
+// Proximity-first nearby search (distance 45% · relevance 25% · rating 20% · open 10%).
+router.get('/nearby', async (req, res, next) => {
+  try {
+    const { lat, lng, categories, radius, openNow, limit, city } = req.query
+    if (lat == null || lng == null) return res.status(400).json({ error: 'lat/lng required' })
+    const cats = categories ? String(categories).split(',').map(s => s.trim()).filter(Boolean) : []
+    const out = await nearbySearch({
+      lat: parseFloat(lat), lng: parseFloat(lng),
+      categories: cats,
+      radius: radius ? parseInt(radius) : 3000,
+      openNowOnly: openNow === 'true' || openNow === '1',
+      limit: limit ? parseInt(limit) : 12,
+      city: city || null,
+    })
+    if (out.error) return res.status(400).json(out)
+    res.json({ count: out.results.length, results: out.results })
+  } catch (err) { next(err) }
+})
+
 
 router.get('/', async (req, res, next) => {
   try {
