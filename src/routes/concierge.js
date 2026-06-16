@@ -6,6 +6,7 @@ const { planNight } = require('../services/planNight')
 const { getWeather } = require('../clients/weather')
 const { query } = require('../db/pool')
 const { findPlace, reverseGeocode } = require('../clients/google')
+const { buildSuggestions } = require('../services/suggestionMode')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
 const logger = require('../utils/logger')
 const router = express.Router()
@@ -82,7 +83,12 @@ VERY IMPORTANT — how to trigger a plan:
 - Do NOT add [[PLAN]] for small talk, greetings, jokes, or when they're still deciding. If someone says "what's up" or "talk to me" or changes their mind, just chat back warmly — no marker.
 - CRUCIAL: When you add [[PLAN]], your message must be a SHORT, warm hand-off ONLY — do NOT name specific venues, places, or describe the itinerary in your text. The actual plan (with the real venues) is built and shown separately as a card right after. If you name places in your text they'll clash with the card. Just say something like "Love it — give me two secs to sort you a cracker." then [[PLAN]].
 - Example (still chatting, no venues decided yet): "Ooh nice, three of you! Bowling then drinks sounds class. Whereabouts are you — town centre?"
-- Example (ready — short hand-off, NO venue names): "Perfect, leave it with me — sorting you something brilliant now. [[PLAN]]"`
+- Example (ready — short hand-off, NO venue names): "Perfect, leave it with me — sorting you something brilliant now. [[PLAN]]"
+
+TWO DIFFERENT MODES — choose the right marker:
+- [[PLAN]] = the user wants ONE specific plan/itinerary ("plan my night", "sort me a day out", "we want food then drinks").
+- [[SUGGEST]] = the user is asking OPEN-ENDED what's good, browsing, or undecided ("what can we do this weekend?", "what's good around here?", "any ideas?", "what's on?"). This shows them a SPREAD of options (nearby places, hidden gems, attractions, events) to pick from — guidance without forcing one plan.
+- When someone's just exploring or asking what's around, prefer [[SUGGEST]] — don't railroad them into a single itinerary. Use a short warm hand-off, e.g. "Loads you could do — here's a few ideas to pick from. [[SUGGEST]]"`
 
 // POST /concierge  { message, history?, selectedCity, lat, lng }
 //   history: full prior thread [{ role:'user'|'sappo', text }]
@@ -143,12 +149,24 @@ router.post('/', async (req, res, next) => {
       return await makePlan(res, { selectedCity, lat, lng, intent, sayBefore: "Right, let me sort you something…", geminiDown: true, thread, boosts })
     }
 
-    // GEMINI decides when to plan, by ending with [[PLAN]]. This is the only reliable
-    // signal because Gemini is the one actually having the conversation.
+    // GEMINI decides the mode by ending its message with a marker:
+    //  [[PLAN]]    → build one complete itinerary (Concierge Mode)
+    //  [[SUGGEST]] → return a curated SPREAD of options (Suggestion Mode)
     const geminiWantsPlan = /\[\[PLAN\]\]/i.test(reply)
-    const cleanReply = reply.replace(/\[\[PLAN\]\]/ig, '').trim()
+    const geminiWantsSuggest = /\[\[SUGGEST\]\]/i.test(reply)
+    const cleanReply = reply.replace(/\[\[PLAN\]\]/ig, '').replace(/\[\[SUGGEST\]\]/ig, '').trim()
+
+    // Also detect open-ended "what's good" questions directly (belt and braces).
+    const looksOpenEnded = /\b(what('?s| is| can)|things to do|what should|recommend|ideas|suggestions?|whats on|what'?s on|explore|show me)\b/i.test(message)
+      && !/\bplan\b/i.test(message)
+
+    const wantSuggest = geminiWantsSuggest || (looksOpenEnded && hasGPS && !geminiWantsPlan)
     const ready = geminiWantsPlan || userWantsPlanNow
 
+    if (wantSuggest) {
+      const handoff = (cleanReply && cleanReply.length <= 160) ? cleanReply : `Here's what's good around ${userLoc.cityName} right now — tap anything you fancy and I'll build it into a day.`
+      return await makeSuggestions(res, { userLoc, weather: null, boosts, sayBefore: handoff })
+    }
 
     if (!ready) {
       // Keep the conversation flowing — just return Gemini's natural reply.
@@ -184,6 +202,49 @@ function mergeIntent(thread, extracted = {}) {
   if (extracted.keywords?.length) merged.keywords = Array.from(new Set([...merged.keywords, ...extracted.keywords]))
   merged.keywords = merged.raw ? (merged.raw.match(/[a-z]{4,}/gi) || []) : []
   return merged
+}
+
+// SUGGESTION MODE: return a curated spread of options (not one fixed plan).
+async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore }) {
+  try {
+    let wx = weather
+    if (!wx) { try { wx = await getWeather(userLoc.lat, userLoc.lng) } catch {} }
+
+    // pull a few upcoming events for this city
+    let events = []
+    try {
+      const { rows } = await query(
+        `SELECT e.id, e.name, e.starts_at, e.is_free, e.min_price, e.ticket_url AS url, v.name AS venue_name
+         FROM events e LEFT JOIN venues v ON v.id = e.venue_id
+         WHERE v.city = $1 AND e.starts_at >= now()
+         ORDER BY e.starts_at ASC LIMIT 8`,
+        [userLoc.cityName]
+      )
+      events = rows.map(r => ({ ...r, source: 'Event' }))
+    } catch (e) { logger.error('[suggest] events fetch failed:', e.message) }
+
+    const sections = await buildSuggestions({
+      lat: userLoc.lat, lng: userLoc.lng, cityName: userLoc.cityName,
+      weather: wx, events, boosts,
+    })
+
+    if (!sections.length) {
+      return res.json({ type: 'reply', say: `I don't have enough on ${userLoc.cityName} yet to show a good spread — want me to just build you a plan instead?` })
+    }
+
+    return res.json({
+      type: 'suggestions',
+      say: sayBefore,
+      city: userLoc.cityName,
+      weather: wx?.current ? { temp: wx.current.temp, condition: wx.current.condition, icon: wx.current.icon } : null,
+      sections,
+      modes: [
+        { id: 'plan', label: 'Recommended Plan', icon: '🗺️' },
+        { id: 'build', label: 'Build Your Own', icon: '🧩' },
+        { id: 'roulette', label: 'Surprise Me', icon: '🎲' },
+      ],
+    })
+  } catch (err) { logger.error('[suggest] error:', err.message); return res.json({ type: 'reply', say: "Couldn't pull suggestions just now — want me to build you a plan instead?" }) }
 }
 
 async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, geminiDown, thread, boosts }) {
