@@ -101,6 +101,21 @@ router.post('/', async (req, res, next) => {
       } catch (e) { logger.error('[concierge] profile load failed:', e.message) }
     }
 
+    // Resolve the user's location ONCE, up front. If GPS is present, we already
+    // know the city — Gemini must NOT ask "where are you?" for nearby requests.
+    const userLoc = await resolveLocation({ lat, lng, selectedCity, promptCity: null })
+    const hasGPS = (lat != null && lng != null)
+    logger.info('[concierge] location', JSON.stringify({
+      gpsReceived: hasGPS, gps: hasGPS ? `${lat.toFixed(4)},${lng.toFixed(4)}` : null,
+      selectedCity: selectedCity || null, resolvedCity: userLoc.cityName, country: userLoc.country || null,
+    }))
+
+    // Build a location-aware system prompt so Gemini behaves like it knows where they are.
+    const locPrompt = hasGPS
+      ? `\n\nLOCATION: The user's live GPS puts them in ${userLoc.country ? userLoc.cityName + ', ' + userLoc.country : userLoc.cityName}. You ALREADY KNOW where they are — do NOT ask "where are you?" or "what city are you in?". For "nearby" requests, use their location directly. You can say things like "I've found some great spots near you".`
+      : `\n\nLOCATION: We don't have the user's GPS. If they ask for nearby places, ask where they're planning from.`
+    const dynamicSystem = SYSTEM + locPrompt
+
     // Build the full conversation for Gemini (full history = memory = no loops).
     const thread = [...history, { role: 'user', text: message }]
     const geminiHistory = thread.map(m => ({
@@ -114,7 +129,7 @@ router.post('/', async (req, res, next) => {
 
     // Let Gemini just TALK — plain text. It decides when it's ready to plan by ending
     // its message with the marker [[PLAN]] (we strip it before showing the user).
-    const reply = await chatText(SYSTEM, geminiHistory, { temperature: 1.0 })
+    const reply = await chatText(dynamicSystem, geminiHistory, { temperature: 1.0 })
 
     // If Gemini is down, fall back gracefully.
     if (!reply) {
@@ -216,15 +231,32 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
     }
   } catch (e) { logger.error('[concierge] venue fetch failed:', e.message) }
 
-  // 1b. PERSONALISATION: re-rank the shortlist using the traveller profile boosts,
-  // so the venues we offer Gemini lean towards what this user enjoys.
-  if (boosts && boosts.categoryBoost && dbVenues.length) {
+  // 1b. PROXIMITY: when we have the user's GPS, rank the shortlist by distance so
+  // "nearby" genuinely means nearby (not a great place 5 miles away).
+  if (lat != null && lng != null && dbVenues.length) {
+    dbVenues = dbVenues.map(v => {
+      const km = haversineKm(lat, lng, v.lat, v.lng)
+      return { ...v, _distKm: km }
+    })
+  }
+
+  // 1c. PERSONALISATION: re-rank using the traveller profile boosts + proximity.
+  if (dbVenues.length) {
     dbVenues = dbVenues
       .map(v => {
         let s = (v.rating || 0) * Math.min(v.rating_count || 0, 500)
-        s += (boosts.categoryBoost[v.category_slug] || 0) * 1000   // boost preferred categories
-        if (boosts.preferCheap && v.price_level && v.price_level <= 2) s += 2000
-        if (boosts.preferCheap && v.price_level >= 3) s -= 1500
+        if (boosts?.categoryBoost) {
+          s += (boosts.categoryBoost[v.category_slug] || 0) * 1000
+          if (boosts.preferCheap && v.price_level && v.price_level <= 2) s += 2000
+          if (boosts.preferCheap && v.price_level >= 3) s -= 1500
+        }
+        // proximity weighting (spec: nearby means nearby)
+        if (v._distKm != null) {
+          if (v._distKm < 0.3) s += 8000
+          else if (v._distKm < 0.8) s += 5000
+          else if (v._distKm < 1.5) s += 2500
+          else if (v._distKm > 3) s -= 3000
+        }
         return { ...v, _pscore: s }
       })
       .sort((a, b) => b._pscore - a._pscore)
