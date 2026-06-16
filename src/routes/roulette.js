@@ -8,6 +8,7 @@ const { getWeather } = require('../clients/weather')
 const { getProfile, plannerBoosts, applySignal } = require('../services/travelProfile')
 const { CITIES } = require('../config')
 const { reverseGeocode } = require('../clients/google')
+const { gatherCandidates, getRecentSpins, recordSpin, storeIntelligence } = require('../services/rouletteEngine')
 const logger = require('../utils/logger')
 const router = express.Router()
 
@@ -82,8 +83,8 @@ router.post('/', async (req, res, next) => {
 
     const cats = MODE_CATEGORIES[mode] || MODE_CATEGORIES.anything
     const radiusM = DISTANCE_M[distance] || 1600
+    const radiusMiles = Math.max(2, Math.round(radiusM / 1609) || 5)
     const when = new Date()
-    const debug = { hotelsRejected: 0, venueCandidates: 0, eventsSkiddle: 0, eventsEventbrite: 0, eventsTicketmaster: 0, eventsOther: 0 }
 
     // weather (for rainy_day / outdoor handling)
     let weather = null
@@ -94,52 +95,21 @@ router.post('/', async (req, res, next) => {
     const pkey = req.userId ? { userId: req.userId } : (deviceId ? { deviceId } : null)
     if (pkey) { try { boosts = plannerBoosts(await getProfile(pkey)) } catch {} }
 
-    // ── HARD BLACKLIST: never let accommodation through (unless mode is explicitly lodging) ──
-    const BLACKLIST_NAME = ['hotel', 'hostel', 'travelodge', 'premier inn', 'aparthotel', 'guest house', 'motel', 'serviced apartment', 'b&b']
-    const BLACKLIST_CAT = ['lodging', 'hotel', 'accommodation', 'apartment', 'real_estate', 'rental']
-    const isBlacklisted = (name, cat) => {
-      if (BLACKLIST_CAT.includes(cat)) return true
-      const n = (name || '').toLowerCase()
-      return BLACKLIST_NAME.some(w => n.includes(w))
+    // ── GATHER CANDIDATES from ALL sources (DB + live APIs) with full audit ──
+    const { venues, events, audit } = await gatherCandidates({ lat, lng, cityName, cats, radiusMiles })
+
+    // ── ANTI-REPETITION: recent spins for this user/device ──
+    const recent = await getRecentSpins({ deviceId, userId: req.userId })
+    const keyOf = (item) => item.kind === 'event'
+      ? `e:${item.e.id || item.e.name}`
+      : `v:${item.v.id || item.v.name}`
+    const repetitionPenalty = (k) => {
+      let p = 0
+      if (recent.last === k) p -= 1000          // same as previous spin
+      if (recent.last5.has(k)) p -= 500          // in last 5 spins
+      if (recent.today.has(k)) p -= 100          // shown earlier today
+      return p
     }
-
-    // ── 1. VENUE CANDIDATES (food/drink/attractions) ──
-    const { rows: rawVenues } = await query(
-      `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours, website
-       FROM venues
-       WHERE city = $1 AND name IS NOT NULL
-         AND category_slug = ANY($2)
-       LIMIT 400`,
-      [cityName, cats]
-    )
-    const venues = rawVenues.filter(v => {
-      if (isBlacklisted(v.name, v.category_slug)) { debug.hotelsRejected++; return false }
-      return true
-    })
-    debug.venueCandidates = venues.length
-
-    // ── 2. EVENT CANDIDATES (Skiddle/Eventbrite/Ticketmaster) happening soon ──
-    let events = []
-    try {
-      const { rows } = await query(
-        `SELECT e.id, e.name, e.category, e.genre, e.starts_at, e.is_free, e.min_price, e.ticket_url,
-                e.image_url, v.lat, v.lng, v.name AS venue_name, v.address,
-                (SELECT provider FROM event_sources es WHERE es.event_id = e.id LIMIT 1) AS provider
-         FROM events e LEFT JOIN venues v ON v.id = e.venue_id
-         WHERE v.city = $1 AND e.starts_at >= now() AND e.starts_at <= now() + interval '14 days'
-           AND e.status = 'active'
-         ORDER BY e.starts_at ASC LIMIT 60`,
-        [cityName]
-      )
-      events = rows
-      for (const e of rows) {
-        const p = (e.provider || '').toLowerCase()
-        if (p.includes('skiddle')) debug.eventsSkiddle++
-        else if (p.includes('eventbrite')) debug.eventsEventbrite++
-        else if (p.includes('ticketmaster')) debug.eventsTicketmaster++
-        else debug.eventsOther++
-      }
-    } catch (e) { logger.error('[roulette] events fetch failed:', e.message) }
 
     // ── Score VENUES ──
     const wantHidden = mode === 'hidden_gem'
@@ -148,15 +118,14 @@ router.post('/', async (req, res, next) => {
       let score = 0, reasons = [], reject = false
       const km = haversineKm(lat, lng, v.lat, v.lng)
       if (km != null) {
-        if (km * 1000 > radiusM * 1.25) reject = true
-        else { score += Math.max(0, 25 - km * 8); if (km * 1000 <= radiusM) reasons.push('nearby') }   // distance up to 25
+        if (km * 1000 > radiusM * 1.4) reject = true
+        else { score += Math.max(0, 25 - km * 8); if (km * 1000 <= radiusM) reasons.push('nearby') }
       }
       const open = isOpenNow(v.opening_hours, when)
       if (open === false) reject = true
       else if (open === true) { score += 10; reasons.push('open now') }
-      if (v.rating) { score += Math.min(v.rating * 3, 15); if (v.rating >= 4.4) reasons.push('highly rated') }   // rating up to 15
+      if (v.rating) { score += Math.min(v.rating * 3, 15); if (v.rating >= 4.4) reasons.push('highly rated') }
       score += Math.min((v.rating_count || 0) / 400, 5)
-      // relevance to mode
       if ((MODE_CATEGORIES[mode] || []).includes(v.category_slug)) { score += 25; reasons.push('matches your vibe') }
       if (budget === 'cheap') { if (v.price_level && v.price_level <= 2) { score += 8; reasons.push('good value') } else if (v.price_level >= 3) score -= 12 }
       if (budget === 'treat') { if (v.price_level >= 3) { score += 8; reasons.push('a proper treat') } }
@@ -166,68 +135,89 @@ router.post('/', async (req, res, next) => {
       }
       if (wantIndoor && ['park'].includes(v.category_slug)) score -= 8
       if (boosts?.categoryBoost?.[v.category_slug]) score += Math.min(boosts.categoryBoost[v.category_slug], 10)
+      score += Math.random() * 8                    // freshness jitter
       const isGem = (v.rating_count || 0) < 600 && (v.rating || 0) >= 4.3
-      return { kind: 'venue', v, score, reasons, reject, km, open, isGem }
-    }).filter(s => !s.reject && s.score > 0)
+      const item = { kind: 'venue', v, score, reasons, reject, km, open, isGem }
+      item.score += repetitionPenalty(keyOf(item))
+      return item
+    }).filter(s => !s.reject && s.score > -100)
 
     // ── Score EVENTS ──
     const scoredEvents = events.map(e => {
       let score = 0, reasons = [], reject = false
       const km = (e.lat != null) ? haversineKm(lat, lng, e.lat, e.lng) : null
       if (km != null) {
-        if (km * 1000 > radiusM * 2) reject = true                    // events allow a bit more travel
+        if (km * 1000 > radiusM * 2.5) reject = true
         else score += Math.max(0, 25 - km * 6)
       }
-      // happening soon (today/tonight/this week) — big boost
       const hrs = (new Date(e.starts_at) - when) / 3600000
       if (hrs >= 0 && hrs <= 12) { score += 30; reasons.push('on today') }
       else if (hrs <= 48) { score += 22; reasons.push('on soon') }
       else if (hrs <= 24 * 7) { score += 12; reasons.push('this week') }
-      // event source trust
+      else if (hrs < 0) reject = true                // already passed
       const p = (e.provider || '').toLowerCase()
       if (p.includes('skiddle') || p.includes('eventbrite') || p.includes('ticketmaster')) { score += 18; reasons.push('live event') }
       else score += 8
-      // relevance to mode
       const cg = `${e.category || ''} ${e.genre || ''}`.toLowerCase()
       if (mode === 'drinks' && /club|dj|party|bar/.test(cg)) { score += 25; reasons.push('matches your vibe') }
       if (mode === 'date_night' && /music|comedy|theatre|live/.test(cg)) { score += 20; reasons.push('great for a date') }
+      if (mode === 'live_event') { score += 20; reasons.push('a live event') }
       if (mode === 'anything') score += 10
       if (budget === 'cheap' && e.is_free) { score += 10; reasons.push('free') }
-      return { kind: 'event', e, score, reasons, reject, km }
-    }).filter(s => !s.reject && s.score > 0)
+      score += Math.random() * 8                    // freshness jitter
+      const item = { kind: 'event', e, score, reasons, reject, km }
+      item.score += repetitionPenalty(keyOf(item))
+      return item
+    }).filter(s => !s.reject && s.score > -100)
 
-    // ── BALANCED POOL: 40% events · 40% quality venues · 20% hidden gems ──
-    // For "live_event" mode, weight heavily toward events. "lively"/"adventure" vibe nudges events up.
+    // ── BALANCED POOL with a LARGE qualified set (30-50), then random pick ──
     scoredEvents.sort((a, b) => b.score - a.score)
     const gems = scoredVenues.filter(s => s.isGem).sort((a, b) => b.score - a.score)
     const regular = scoredVenues.filter(s => !s.isGem).sort((a, b) => b.score - a.score)
 
-    const POOL = 10
+    const POOL = 40                                  // large qualified pool (spec: 30-50)
     let eventShare = 0.4, venueShare = 0.4, gemShare = 0.2
     if (mode === 'live_event') { eventShare = 0.8; venueShare = 0.15; gemShare = 0.05 }
     else if (vibe === 'lively' || vibe === 'adventure') { eventShare = 0.5; venueShare = 0.35; gemShare = 0.15 }
     else if (vibe === 'chill') { eventShare = 0.25; venueShare = 0.45; gemShare = 0.3 }
 
-    const pool = [
+    let pool = [
       ...scoredEvents.slice(0, Math.round(POOL * eventShare)),
       ...regular.slice(0, Math.round(POOL * venueShare)),
       ...gems.slice(0, Math.round(POOL * gemShare)),
     ]
-    // backfill to POOL size from whatever's best if a bucket was thin
     if (pool.length < POOL) {
-      const rest = [...scoredEvents, ...regular, ...gems]
-        .filter(x => !pool.includes(x))
-        .sort((a, b) => b.score - a.score)
+      const rest = [...scoredEvents, ...regular, ...gems].filter(x => !pool.includes(x)).sort((a, b) => b.score - a.score)
       pool.push(...rest.slice(0, POOL - pool.length))
     }
-    debug.finalPool = pool.length
+    // never let the immediately-previous result back in
+    pool = pool.filter(item => keyOf(item) !== recent.last)
 
-    logger.info('[roulette] ' + JSON.stringify({ city: cityName, mode, ...debug }))
+    // ── FULL AUDIT LOG ──
+    const totalCandidates = (audit.dbVenues.count + audit.googlePlaces.count + audit.dbEvents.count + audit.skiddle.count + audit.ticketmaster.count + audit.eventbrite.count)
+    logger.info('[roulette AUDIT] ' + JSON.stringify({
+      city: cityName, mode, vibe,
+      sources: {
+        googlePlaces: audit.googlePlaces, dbVenues: audit.dbVenues,
+        skiddle: audit.skiddle, ticketmaster: audit.ticketmaster, eventbrite: audit.eventbrite, dbEvents: audit.dbEvents,
+      },
+      totalCandidates,
+      afterFilter: venues.length + events.length,
+      afterScoring: scoredVenues.length + scoredEvents.length,
+      finalPool: pool.length,
+    }))
 
-    if (!pool.length) return res.json({ error: 'no_matches', message: "Nothing good open and nearby right now — try a wider distance or different mode.", debug })
+    // store discovered venues/events into the intelligence cache (non-blocking)
+    storeIntelligence({ venues, events }).catch(() => {})
 
-    // RANDOM pick from the balanced top pool.
+    if (!pool.length) return res.json({ error: 'no_matches', message: "Nothing good open and nearby right now — try a wider distance or different mode.", audit })
+
+    // RANDOM pick from the large qualified pool.
     const pick = pool[Math.floor(Math.random() * pool.length)]
+    const chosenKey = keyOf(pick)
+    recordSpin({ deviceId, userId: req.userId, resultKey: chosenKey, resultName: pick.kind === 'event' ? pick.e.name : pick.v.name }).catch(() => {})
+
+    const debug = { totalCandidates, finalPool: pool.length, audit }
 
     // ── Build the response (venue OR event) ──
     if (pick.kind === 'event') {
