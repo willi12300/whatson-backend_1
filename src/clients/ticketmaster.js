@@ -3,13 +3,14 @@ const { config } = require('../config')
 const { sleep } = require('../utils/helpers')
 const logger = require('../utils/logger')
 
-async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30) {
+async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30, opts = {}) {
   if (!config.ticketmaster.key) { logger.warn('Ticketmaster key missing'); return [] }
+  const { maxResults = Infinity, timeoutMs = 15000, maxPages = 5 } = opts
   const out = []
   const end = new Date()
   end.setDate(end.getDate() + daysAhead)
   let page = 0
-  while (page < 5) {
+  while (page < maxPages) {
     try {
       const res = await axios.get('https://app.ticketmaster.com/discovery/v2/events.json', {
         params: {
@@ -23,7 +24,7 @@ async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30) {
           page,
           sort: 'date,asc',
         },
-        timeout: 15000,
+        timeout: timeoutMs,
       })
       const events = res.data._embedded?.events || []
       if (!events.length) break
@@ -53,6 +54,7 @@ async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30) {
       }
       const totalPages = res.data.page?.totalPages || 1
       if (page >= totalPages - 1) break
+      if (out.length >= maxResults) break
       page++
       await sleep(250)
     } catch (err) {

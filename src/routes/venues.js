@@ -8,16 +8,27 @@ const router = express.Router()
 // GET /venues/test-google — quick health check for the Places API (New).
 // Hit this in a browser after enabling Places API (New) to confirm it works.
 router.get('/test-google', async (req, res) => {
+  logger.info('[test-google] hit')
   try {
-    const lat = parseFloat(req.query.lat) || 53.4084   // Liverpool default
+    const lat = parseFloat(req.query.lat) || 53.4084
     const lng = parseFloat(req.query.lng) || -2.9916
-    const venues = await fetchVenues(lat, lng, 2000)
-    if (venues && venues.length) {
-      return res.json({ google: 'WORKING ✓', count: venues.length, sample: venues.slice(0, 3).map(v => v.name), keyPresent: !!(process.env.GOOGLE_PLACES_API_KEY) })
+    const keyPresent = !!process.env.GOOGLE_PLACES_API_KEY
+    logger.info('[test-google] keyPresent=' + keyPresent + ' calling fetchVenues')
+    let venues = []
+    try {
+      venues = await fetchVenues(lat, lng, 2000)
+    } catch (inner) {
+      logger.error('[test-google] fetchVenues threw: ' + inner.message)
+      return res.json({ google: 'ERROR', stage: 'fetchVenues', error: inner.message, keyPresent })
     }
-    return res.json({ google: 'NOT WORKING ✗', count: 0, keyPresent: !!(process.env.GOOGLE_PLACES_API_KEY), hint: 'Enable "Places API (New)" in Google Cloud and ensure the key allows it. Check Railway logs for "API keys are not supported".' })
+    logger.info('[test-google] fetchVenues returned ' + (venues ? venues.length : 'null'))
+    if (venues && venues.length) {
+      return res.json({ google: 'WORKING', count: venues.length, sample: venues.slice(0, 3).map(v => v.name), keyPresent })
+    }
+    return res.json({ google: 'NOT_WORKING', count: 0, keyPresent, hint: 'Enable "Places API (New)" in Google Cloud and allow it on the key. Check logs for "API keys are not supported".' })
   } catch (e) {
-    return res.json({ google: 'ERROR ✗', error: e.message, keyPresent: !!(process.env.GOOGLE_PLACES_API_KEY) })
+    logger.error('[test-google] outer error: ' + (e && e.message))
+    return res.json({ google: 'ERROR', stage: 'handler', error: e && e.message, keyPresent: !!process.env.GOOGLE_PLACES_API_KEY })
   }
 })
 

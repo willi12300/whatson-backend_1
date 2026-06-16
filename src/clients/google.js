@@ -11,7 +11,7 @@ const TYPES = [
   'historical_landmark', 'church', 'zoo', 'aquarium',
 ]
 
-async function searchType(lat, lng, radius, type) {
+async function searchType(lat, lng, radius, type, timeoutMs = 15000) {
   try {
     const res = await axios.post(
       'https://places.googleapis.com/v1/places:searchNearby',
@@ -26,7 +26,7 @@ async function searchType(lat, lng, radius, type) {
           'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,places.rating,places.userRatingCount,places.priceLevel,places.regularOpeningHours,places.photos,places.internationalPhoneNumber,places.websiteUri,places.businessStatus',
           'Content-Type': 'application/json',
         },
-        timeout: 15000,
+        timeout: timeoutMs,
       }
     )
     return (res.data.places || []).map(p => ({
@@ -57,16 +57,33 @@ async function searchType(lat, lng, radius, type) {
   }
 }
 
-async function fetchVenues(lat, lng, radius) {
+async function fetchVenues(lat, lng, radius, opts = {}) {
   if (!config.google.key) { logger.warn('Google key missing'); return [] }
+  const { types = TYPES, parallel = false, timeoutMs = 15000 } = opts
   const seen = new Set()
   const out = []
-  for (const type of TYPES) {
-    const batch = await searchType(lat, lng, radius, type)
-    for (const v of batch) {
-      if (!seen.has(v.providerId)) { seen.add(v.providerId); out.push(v) }
+
+  if (parallel) {
+    // Fast path (Roulette): fire all type searches at once, cap each by timeout.
+    const settled = await Promise.allSettled(
+      types.map(type => searchType(lat, lng, radius, type, timeoutMs))
+    )
+    for (const r of settled) {
+      if (r.status === 'fulfilled') {
+        for (const v of r.value) {
+          if (!seen.has(v.providerId)) { seen.add(v.providerId); out.push(v) }
+        }
+      }
     }
-    await sleep(150)
+  } else {
+    // Sequential path (sync job): gentle on rate limits.
+    for (const type of types) {
+      const batch = await searchType(lat, lng, radius, type, timeoutMs)
+      for (const v of batch) {
+        if (!seen.has(v.providerId)) { seen.add(v.providerId); out.push(v) }
+      }
+      await sleep(150)
+    }
   }
   logger.info(`Google Places: ${out.length} venues`)
   return out

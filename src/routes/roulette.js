@@ -96,7 +96,19 @@ router.post('/', async (req, res, next) => {
     if (pkey) { try { boosts = plannerBoosts(await getProfile(pkey)) } catch {} }
 
     // ── GATHER CANDIDATES from ALL sources (DB + live APIs) with full audit ──
-    const { venues, events, audit } = await gatherCandidates({ lat, lng, cityName, cats, radiusMiles })
+    // Only fetch the Google place-types relevant to the selected mode (faster + on-target).
+    const GOOGLE_TYPES_BY_MODE = {
+      food: ['restaurant', 'cafe'],
+      drinks: ['bar', 'pub'],
+      live_event: ['bar', 'night_club'],
+      hidden_gem: ['restaurant', 'cafe', 'bar', 'art_gallery', 'tourist_attraction'],
+      tourist_spot: ['tourist_attraction', 'museum', 'art_gallery', 'historical_landmark', 'park'],
+      date_night: ['restaurant', 'bar'],
+      rainy_day: ['museum', 'art_gallery', 'cafe', 'restaurant'],
+      anything: ['restaurant', 'cafe', 'bar', 'pub', 'tourist_attraction', 'museum', 'art_gallery', 'park'],
+    }
+    const googleTypes = GOOGLE_TYPES_BY_MODE[mode] || GOOGLE_TYPES_BY_MODE.anything
+    const { venues, events, audit } = await gatherCandidates({ lat, lng, cityName, cats, radiusMiles, googleTypes })
 
     // ── ANTI-REPETITION: recent spins for this user/device ──
     const recent = await getRecentSpins({ deviceId, userId: req.userId })

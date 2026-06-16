@@ -26,9 +26,28 @@ function haversineKm(a, b, c, d) {
   return 2 * R * Math.asin(Math.sqrt(h))
 }
 
+// Race a promise against a hard wall-clock deadline. On timeout, resolve with fallback.
+function withDeadline(promise, ms, fallback, label) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => { logger.warn(`[roulette] ${label} hit ${ms}ms deadline`); resolve(fallback) }, ms)),
+  ])
+}
+
+// ── simple in-memory cache (per-process). Keyed by city+area+radius. ──
+// Venues change slowly (cache 6h), events change faster (cache 30min).
+const _cache = new Map()
+const VENUE_TTL = 6 * 3600 * 1000
+const EVENT_TTL = 30 * 60 * 1000
+function cacheKey({ cityName, lat, lng, radiusMiles }) {
+  const rl = lat != null ? lat.toFixed(2) : 'x'   // ~1km buckets
+  const rg = lng != null ? lng.toFixed(2) : 'x'
+  return `${cityName}|${rl}|${rg}|${radiusMiles}`
+}
+
 // Gather candidates from ALL sources, with a per-source audit.
 // Returns { venues:[], events:[], audit:{} }
-async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5 }) {
+async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5, googleTypes = null }) {
   const audit = {
     googlePlaces: { sent: false, ok: false, count: 0 },
     dbVenues: { count: 0 },
@@ -37,86 +56,105 @@ async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5 }) {
     eventbrite: { sent: false, ok: false, count: 0 },
     dbEvents: { count: 0 },
   }
+  const TIMEOUT = 2500   // per-API cap (spec: 2500ms)
 
-  // ---- VENUES: local DB ----
-  let dbVenues = []
-  try {
-    const { rows } = await query(
-      `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours, website
-       FROM venues WHERE city = $1 AND name IS NOT NULL AND category_slug = ANY($2) LIMIT 400`,
-      [cityName, cats]
-    )
-    dbVenues = rows.map(v => ({ ...v, _src: 'db' }))
-    audit.dbVenues.count = dbVenues.length
-  } catch (e) { logger.error('[roulette] db venues failed:', e.message) }
-
-  // ---- VENUES: live Google Places (widens the pool beyond what's synced) ----
-  let googleVenues = []
-  if (lat != null && lng != null) {
-    audit.googlePlaces.sent = true
-    try {
-      const radiusM = Math.min(radiusMiles * 1609, 20000)
-      const fetched = await google.fetchVenues(lat, lng, radiusM)
-      audit.googlePlaces.ok = true
-      audit.googlePlaces.count = fetched.length
-      // normalise to the venue shape (these aren't in our DB, so no id)
-      googleVenues = fetched.map(v => ({
-        id: null, name: v.name, category_slug: v.category || v.primaryType || 'other',
-        rating: v.rating || null, rating_count: v.userRatingCount || v.rating_count || null,
-        price_level: v.priceLevel || v.price_level || null,
-        address: v.formattedAddress || v.address || null,
-        lat: v.location?.latitude ?? v.lat, lng: v.location?.longitude ?? v.lng,
-        opening_hours: v.regularOpeningHours || v.opening_hours || null,
-        website: v.websiteUri || null, _src: 'google',
-      }))
-    } catch (e) { logger.error('[roulette] google live failed:', e.message); audit.googlePlaces.ok = false }
+  // ── CACHE FAST PATH: if both venues & events are fresh, return instantly ──
+  const ckey = cacheKey({ cityName, lat, lng, radiusMiles })
+  const cv = _cache.get('v:' + ckey)
+  const ce = _cache.get('e:' + ckey)
+  if (cv && ce && (Date.now() - cv.at < VENUE_TTL) && (Date.now() - ce.at < EVENT_TTL)) {
+    audit.cached = true
+    return { venues: cv.data, events: ce.data, audit }
   }
 
-  // ---- EVENTS: local DB ----
-  let dbEvents = []
-  try {
-    const { rows } = await query(
-      `SELECT e.id, e.name, e.category, e.genre, e.starts_at, e.is_free, e.min_price, e.ticket_url,
-              e.image_url, v.lat, v.lng, v.name AS venue_name, v.address,
-              (SELECT provider FROM event_sources es WHERE es.event_id = e.id LIMIT 1) AS provider
-       FROM events e LEFT JOIN venues v ON v.id = e.venue_id
-       WHERE v.city = $1 AND e.starts_at >= now() AND e.starts_at <= now() + interval '21 days'
-         AND e.status = 'active' ORDER BY e.starts_at ASC LIMIT 80`,
-      [cityName]
-    )
-    dbEvents = rows.map(e => ({ ...e, _src: 'db' }))
-    audit.dbEvents.count = dbEvents.length
-  } catch (e) { logger.error('[roulette] db events failed:', e.message) }
+  // ---- DB reads (fast, local) run in parallel with each other ----
+  const dbVenuesP = query(
+    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours, website
+     FROM venues WHERE city = $1 AND name IS NOT NULL AND category_slug = ANY($2) LIMIT 400`,
+    [cityName, cats]
+  ).then(r => r.rows.map(v => ({ ...v, _src: 'db' }))).catch(e => { logger.error('[roulette] db venues failed:', e.message); return [] })
 
-  // ---- EVENTS: live APIs (the big pool-wideners) ----
+  const dbEventsP = query(
+    `SELECT e.id, e.name, e.category, e.genre, e.starts_at, e.is_free, e.min_price, e.ticket_url,
+            e.image_url, v.lat, v.lng, v.name AS venue_name, v.address,
+            (SELECT provider FROM event_sources es WHERE es.event_id = e.id LIMIT 1) AS provider
+     FROM events e LEFT JOIN venues v ON v.id = e.venue_id
+     WHERE v.city = $1 AND e.starts_at >= now() AND e.starts_at <= now() + interval '21 days'
+       AND e.status = 'active' ORDER BY e.starts_at ASC LIMIT 80`,
+    [cityName]
+  ).then(r => r.rows.map(e => ({ ...e, _src: 'db' }))).catch(e => { logger.error('[roulette] db events failed:', e.message); return [] })
+
+  // ---- LIVE API calls — ALL in parallel, each capped at TIMEOUT ----
+  const haveGPS = lat != null && lng != null
+  const googleP = haveGPS ? (async () => {
+    audit.googlePlaces.sent = true
+    const radiusM = Math.min(radiusMiles * 1609, 20000)
+    const types = googleTypes || ['restaurant', 'cafe', 'bar', 'pub', 'tourist_attraction', 'museum', 'art_gallery', 'park']
+    const fetched = await google.fetchVenues(lat, lng, radiusM, { types, parallel: true, timeoutMs: TIMEOUT })
+    audit.googlePlaces.ok = true; audit.googlePlaces.count = fetched.length
+    return fetched.map(v => ({
+      id: null, name: v.name, category_slug: v.category || v.primaryType || 'other',
+      rating: v.rating || null, rating_count: v.userRatingCount || v.rating_count || null,
+      price_level: v.priceLevel || v.price_level || null,
+      address: v.formattedAddress || v.address || null,
+      lat: v.location?.latitude ?? v.lat, lng: v.location?.longitude ?? v.lng,
+      opening_hours: v.regularOpeningHours || v.opening_hours || null,
+      website: v.websiteUri || null, _src: 'google',
+    }))
+  })() : Promise.resolve([])
+
+  const skiddleP = haveGPS ? (async () => {
+    audit.skiddle.sent = true
+    const r = await skiddle.fetchEvents(lat, lng, radiusMiles, 30, { maxResults: 150, timeoutMs: TIMEOUT })
+    audit.skiddle.ok = true; audit.skiddle.count = r.length; return r
+  })() : Promise.resolve([])
+
+  const tmP = haveGPS ? (async () => {
+    audit.ticketmaster.sent = true
+    const r = await ticketmaster.fetchEvents(lat, lng, radiusMiles, 30, { maxResults: 100, maxPages: 2, timeoutMs: TIMEOUT })
+    audit.ticketmaster.ok = true; audit.ticketmaster.count = r.length; return r
+  })() : Promise.resolve([])
+
+  const ebP = haveGPS ? (async () => {
+    audit.eventbrite.sent = true
+    const r = await eventbrite.fetchEvents(lat, lng, radiusMiles)
+    audit.eventbrite.ok = true; audit.eventbrite.count = r.length; return r
+  })() : Promise.resolve([])
+
+  // wait for EVERYTHING together — each live API has a hard 3s wall-clock deadline
+  const DEADLINE = 3000
+  const [dbVenues, dbEvents, gRes, skRes, tmRes, ebRes] = await Promise.all([
+    dbVenuesP, dbEventsP,
+    withDeadline(googleP, DEADLINE, [], 'google').catch(e => { logger.error('[roulette] google failed:', e.message); audit.googlePlaces.ok = false; return [] }),
+    withDeadline(skiddleP, DEADLINE, [], 'skiddle').catch(e => { logger.error('[roulette] skiddle failed:', e.message); audit.skiddle.ok = false; return [] }),
+    withDeadline(tmP, DEADLINE, [], 'ticketmaster').catch(e => { logger.error('[roulette] ticketmaster failed:', e.message); audit.ticketmaster.ok = false; return [] }),
+    withDeadline(ebP, DEADLINE, [], 'eventbrite').catch(e => { logger.error('[roulette] eventbrite failed:', e.message); audit.eventbrite.ok = false; return [] }),
+  ])
+  audit.dbVenues.count = dbVenues.length
+  audit.dbEvents.count = dbEvents.length
+
+  // normalise live events to our shape
   const liveEvents = []
-  if (lat != null && lng != null) {
-    const [sk, tm, eb] = await Promise.allSettled([
-      (async () => { audit.skiddle.sent = true; const r = await skiddle.fetchEvents(lat, lng, radiusMiles); audit.skiddle.ok = true; audit.skiddle.count = r.length; return r })(),
-      (async () => { audit.ticketmaster.sent = true; const r = await ticketmaster.fetchEvents(lat, lng, radiusMiles); audit.ticketmaster.ok = true; audit.ticketmaster.count = r.length; return r })(),
-      (async () => { audit.eventbrite.sent = true; const r = await eventbrite.fetchEvents(lat, lng, radiusMiles); audit.eventbrite.ok = true; audit.eventbrite.count = r.length; return r })(),
-    ])
-    for (const res of [sk, tm, eb]) {
-      if (res.status === 'fulfilled' && Array.isArray(res.value)) {
-        for (const ev of res.value) {
-          liveEvents.push({
-            id: ev.providerId ? `${ev.provider}:${ev.providerId}` : null,
-            name: ev.name, category: ev.category, genre: ev.genre,
-            starts_at: ev.startsAt, is_free: ev.isFree, min_price: ev.minPrice,
-            ticket_url: ev.ticketUrl, image_url: ev.imageUrl,
-            lat: ev.venueLat, lng: ev.venueLng, venue_name: ev.venueName, address: ev.venueAddress,
-            provider: ev.provider, _src: 'live',
-          })
-        }
-      }
+  for (const arr of [skRes, tmRes, ebRes]) {
+    for (const ev of arr) {
+      liveEvents.push({
+        id: ev.providerId ? `${ev.provider}:${ev.providerId}` : null,
+        name: ev.name, category: ev.category, genre: ev.genre,
+        starts_at: ev.startsAt, is_free: ev.isFree, min_price: ev.minPrice,
+        ticket_url: ev.ticketUrl, image_url: ev.imageUrl,
+        lat: ev.venueLat, lng: ev.venueLng, venue_name: ev.venueName, address: ev.venueAddress,
+        provider: ev.provider, _src: 'live',
+      })
     }
   }
 
-  // merge + dedupe venues (by name+lat) and events (by provider id or name+date)
-  const venues = dedupeVenues([...dbVenues, ...googleVenues]).filter(v => {
-    return !isBlacklisted(v.name, v.category_slug)
-  })
+  const venues = dedupeVenues([...dbVenues, ...gRes]).filter(v => !isBlacklisted(v.name, v.category_slug))
   const events = dedupeEvents([...dbEvents, ...liveEvents])
+
+  // store in cache (venues + events separately so TTLs differ)
+  const ck = cacheKey({ cityName, lat, lng, radiusMiles })
+  _cache.set('v:' + ck, { at: Date.now(), data: venues })
+  _cache.set('e:' + ck, { at: Date.now(), data: events })
 
   return { venues, events, audit }
 }

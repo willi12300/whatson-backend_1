@@ -3,8 +3,9 @@ const { config } = require('../config')
 const { sleep } = require('../utils/helpers')
 const logger = require('../utils/logger')
 
-async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30) {
+async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30, opts = {}) {
   if (!config.skiddle.key) { logger.warn('Skiddle key missing'); return [] }
+  const { maxResults = Infinity, timeoutMs = 15000 } = opts
   const today = new Date()
   const future = new Date(today)
   future.setDate(future.getDate() + daysAhead)
@@ -15,7 +16,7 @@ async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30) {
     try {
       const res = await axios.get('https://www.skiddle.com/api/v1/events/search/', {
         params: { api_key: config.skiddle.key, latitude: lat, longitude: lng, radius: radiusMiles, limit: 100, offset, daterange: dateRange, description: 1 },
-        timeout: 15000,
+        timeout: timeoutMs,
       })
       const results = res.data.results || []
       if (!results.length) break
@@ -39,6 +40,7 @@ async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30) {
         })
       }
       if (results.length < 100) break
+      if (out.length >= maxResults) break       // fast cap for Roulette
       offset += 100
       await sleep(300)
     } catch (err) {
