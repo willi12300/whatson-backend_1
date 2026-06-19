@@ -8,6 +8,7 @@ const skiddle = require('../clients/skiddle')
 const ticketmaster = require('../clients/ticketmaster')
 const eventbrite = require('../clients/eventbrite')
 const google = require('../clients/google')
+const { normaliseName } = require('../utils/helpers')
 
 // ── blacklist (accommodation never appears) ──
 const BLACKLIST_NAME = ['hotel', 'hostel', 'travelodge', 'premier inn', 'aparthotel', 'guest house', 'motel', 'serviced apartment', 'b&b']
@@ -232,11 +233,51 @@ async function recordSpin({ deviceId, userId, resultKey, resultName }) {
   } catch (e) { logger.error('[roulette] record spin failed:', e.message) }
 }
 
+
+function toUpsertVenue(v, cityName = null) {
+  const providerId = v.provider_id || v.google_place_id || v.providerId || null
+  return {
+    name: v.name,
+    normalisedName: normaliseName(v.name || ''),
+    category: v.category_slug || v.category || 'other',
+    lat: v.lat,
+    lng: v.lng,
+    address: v.address || null,
+    postcode: v.postcode || null,
+    phone: v.phone || null,
+    website: v.website || null,
+    rating: v.rating || null,
+    ratingCount: v.rating_count || v.ratingCount || null,
+    priceLevel: v.price_level || v.priceLevel || null,
+    openingHours: v.opening_hours || null,
+    businessStatus: v.business_status || null,
+    photos: v.photos || [],
+    coverPhoto: v.cover_photo || (Array.isArray(v.photos) ? (v.photos[0]?.url || v.photos[0]) : null),
+    googlePlaceId: providerId,
+    sources: providerId ? [{ provider: 'google', providerId, raw: v.raw || v }] : [],
+    city: cityName,
+  }
+}
+
+async function saveDiscoveredVenue(v, cityName = null) {
+  if (!v?.name || v.lat == null || v.lng == null) return null
+  try {
+    const { upsertVenue } = require('./sync')
+    const result = await upsertVenue(toUpsertVenue(v, cityName), cityName || v.city || null)
+    return result?.id || null
+  } catch (e) {
+    logger.error('[roulette] discovered venue upsert failed:', e.message)
+    return null
+  }
+}
+
 // Store discovered venues/events into the intelligence cache (fire-and-forget).
-async function storeIntelligence({ venues = [], events = [] }) {
+async function storeIntelligence({ venues = [], events = [], cityName = null }) {
   try {
     for (const v of venues) {
       if (v._src !== 'google' || !v.name) continue   // only cache freshly-discovered ones
+      // Also upsert into core venues table and queue background enrichment.
+      saveDiscoveredVenue(v, cityName).catch(() => {})
       const sourceKey = `google:${(v.name || '').toLowerCase()}:${v.lat?.toFixed(4)}`
       await query(
         `INSERT INTO venue_intelligence (source_key, name, category, lat, lng, address, rating, rating_count, website, sources)
@@ -258,4 +299,4 @@ async function storeIntelligence({ venues = [], events = [] }) {
   } catch (e) { logger.error('[roulette] store intelligence failed:', e.message) }
 }
 
-module.exports = { gatherCandidates, isBlacklisted, haversineKm, getRecentSpins, recordSpin, storeIntelligence }
+module.exports = { gatherCandidates, isBlacklisted, haversineKm, getRecentSpins, recordSpin, storeIntelligence, saveDiscoveredVenue }

@@ -5,6 +5,7 @@ const { nearbySearch } = require('../services/nearbySearch')
 const { fetchVenues } = require('../clients/google')
 const logger = require('../utils/logger')
 const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch } = require('../services/venueProfile')
+const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
 const router = express.Router()
 
 // GET /venues/test-google — quick health check for the Places API (New).
@@ -119,6 +120,40 @@ router.post('/admin/sync-tripadvisor', async (req, res, next) => {
     })
     res.json({ tripadvisor: 'SYNC_COMPLETE', ...out })
   } catch (err) { next(err) }
+})
+
+
+// GET /venues/admin/enrichment-status — see background enrichment queue health.
+router.get('/admin/enrichment-status', async (req, res) => {
+  res.json({ enrichment: getQueueStatus() })
+})
+
+// POST /venues/admin/queue-enrichment?city=Liverpool&limit=100
+// Queues existing venues for TripAdvisor + social/website enrichment in the background.
+router.post('/admin/queue-enrichment', async (req, res, next) => {
+  try {
+    const city = req.query.city || req.body?.city || null
+    const limit = parseInt(req.query.limit || req.body?.limit || 100)
+    const params = []
+    const where = []
+    if (city) { params.push(city); where.push(`city = $${params.length}`) }
+    where.push(`(tripadvisor_location_id IS NULL OR socials_checked = FALSE OR profile_last_enriched IS NULL)`)
+    params.push(limit)
+    const { rows } = await query(
+      `SELECT id, name FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY rating_count DESC NULLS LAST, rating DESC NULLS LAST LIMIT $${params.length}`,
+      params
+    )
+    let queued = 0
+    for (const v of rows) if (scheduleVenueEnrichment(v.id, 'manual_bulk_queue')) queued++
+    res.json({ queued, scanned: rows.length, venues: rows.map(v => ({ id: v.id, name: v.name })), status: getQueueStatus() })
+  } catch (err) { next(err) }
+})
+
+// POST /venues/:id/queue-enrichment — queues all enrichment for one venue.
+router.post('/:id/queue-enrichment', async (req, res) => {
+  const queued = scheduleVenueEnrichment(req.params.id, 'manual_single_queue')
+  res.json({ queued, status: getQueueStatus() })
 })
 
 // POST /venues/:id/sync-tripadvisor — force TripAdvisor enrichment for one venue.

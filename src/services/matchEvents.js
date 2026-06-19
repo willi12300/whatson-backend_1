@@ -2,6 +2,13 @@ const { query } = require('../db/pool')
 const { distanceMeters, normaliseName, jaroWinkler } = require('../utils/helpers')
 const logger = require('../utils/logger')
 
+function queueEnrichment(venueId, reason) {
+  try {
+    const { scheduleVenueEnrichment } = require('./backgroundEnrichment')
+    scheduleVenueEnrichment(venueId, reason)
+  } catch (e) { logger.error('[matchEvents] enrichment queue skipped:', e.message) }
+}
+
 async function matchEventToVenue(event, city) {
   // 1. name + proximity
   if (event.venueLat && event.venueLng) {
@@ -40,6 +47,7 @@ async function matchEventToVenue(event, city) {
       `INSERT INTO venues (name, normalised_name, category_slug, lat, lng, address, city) VALUES ($1,$2,'other',$3,$4,$5,$6) RETURNING id`,
       [event.venueName, normaliseName(event.venueName), event.venueLat, event.venueLng, event.venueAddress || null, city]
     )
+    queueEnrichment(rows[0].id, 'event_stub_venue')
     return { venueId: rows[0].id, confidence: 0.3, method: 'stub' }
   }
 

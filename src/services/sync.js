@@ -9,6 +9,13 @@ const { deduplicate, mergeCluster } = require('./dedup')
 const { matchEventToVenue } = require('./matchEvents')
 const logger = require('../utils/logger')
 
+function queueEnrichment(venueId, reason) {
+  try {
+    const { scheduleVenueEnrichment } = require('./backgroundEnrichment')
+    scheduleVenueEnrichment(venueId, reason)
+  } catch (e) { logger.error('[sync] enrichment queue skipped:', e.message) }
+}
+
 async function upsertVenue(v, city) {
   const googleSource = (v.sources || []).find(s => s.provider === 'google') || null
   const googlePlaceId = googleSource?.providerId || v.googlePlaceId || null
@@ -31,6 +38,9 @@ async function upsertVenue(v, city) {
     await query(`INSERT INTO venue_sources (venue_id,provider,provider_id,raw) VALUES ($1,$2,$3,$4) ON CONFLICT (provider,provider_id) DO UPDATE SET venue_id=EXCLUDED.venue_id,raw=EXCLUDED.raw`,
       [venueId,s.provider,s.providerId,s.raw?JSON.stringify(s.raw):null])
   }
+  // Any venue discovered or refreshed by APIs should become richer over time.
+  // Fire-and-forget so city sync / roulette / concierge stay fast.
+  queueEnrichment(venueId, isNew ? 'new_venue' : 'refreshed_venue')
   return { id: venueId, isNew }
 }
 
@@ -108,4 +118,4 @@ async function syncCity(cityPreset) {
   }
 }
 
-module.exports = { syncCity }
+module.exports = { syncCity, upsertVenue, upsertEvent }

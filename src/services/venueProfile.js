@@ -198,8 +198,6 @@ async function maybeUpdateGoogleProfile(venue) {
       photos: nextPhotos,
       cover_photo: venue.cover_photo || cover,
       profile_last_enriched: new Date().toISOString(),
-      tripadvisor_status: 'synced',
-      tripadvisor_debug: ta.debug || null,
     }
   } catch (e) {
     logger.error('[venueProfile] Google profile update skipped:', e.message)
@@ -227,7 +225,7 @@ async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
     }
     if (ta?.noMatch || !ta?.locationId) {
       logger.info(`[venueProfile] TripAdvisor no match for ${venue.name} (${venue.id})`)
-      await query(`UPDATE venues SET tripadvisor_last_checked=now() WHERE id=$1`, [venue.id]).catch(() => {})
+      await query(`UPDATE venues SET tripadvisor_last_checked=now(), tripadvisor_status='no_match', tripadvisor_debug=$2, tripadvisor_candidates=$3 WHERE id=$1`, [venue.id, ta?.debug ? JSON.stringify(ta.debug) : null, ta?.candidates ? JSON.stringify(ta.candidates) : JSON.stringify([])]).catch(() => {})
       return {
         ...venue,
         tripadvisor_last_checked: new Date().toISOString(),
@@ -245,9 +243,12 @@ async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
         tripadvisor_url=$5,
         tripadvisor_top_review=$6,
         tripadvisor_last_checked=now(),
-        cover_photo=COALESCE(cover_photo, $7),
+        tripadvisor_status='synced',
+        tripadvisor_debug=$7,
+        tripadvisor_candidates=$8,
+        cover_photo=COALESCE(cover_photo, $9),
         profile_last_enriched=now()
-      WHERE id=$8
+      WHERE id=$10
     `, [
       ta.locationId,
       ta.rating,
@@ -255,6 +256,8 @@ async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
       ta.ranking,
       ta.url,
       ta.topReview ? JSON.stringify(ta.topReview) : null,
+      ta.debug ? JSON.stringify(ta.debug) : null,
+      ta.candidates ? JSON.stringify(ta.candidates) : JSON.stringify([]),
       ta.photoUrl,
       venue.id,
     ])
@@ -268,6 +271,9 @@ async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
       tripadvisor_top_review: ta.topReview,
       cover_photo: venue.cover_photo || ta.photoUrl,
       profile_last_enriched: new Date().toISOString(),
+      tripadvisor_status: 'synced',
+      tripadvisor_debug: ta.debug || null,
+      tripadvisor_candidates: ta.candidates || [],
     }
   } catch (e) {
     logger.error('[venueProfile] TripAdvisor update skipped:', e.message)

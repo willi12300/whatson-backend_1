@@ -7,7 +7,7 @@ const { getWeather } = require('../clients/weather')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
 const { CITIES } = require('../config')
 const { reverseGeocode } = require('../clients/google')
-const { gatherCandidates, getRecentSpins, recordSpin, storeIntelligence } = require('../services/rouletteEngine')
+const { gatherCandidates, getRecentSpins, recordSpin, storeIntelligence, saveDiscoveredVenue } = require('../services/rouletteEngine')
 const logger = require('../utils/logger')
 const router = express.Router()
 
@@ -445,7 +445,7 @@ router.post('/', async (req, res, next) => {
     }
 
     logger.info('[roulette AUDIT] ' + JSON.stringify(debug))
-    storeIntelligence({ venues, events }).catch(() => {})
+    storeIntelligence({ venues, events, cityName }).catch(() => {})
 
     if (!pool.length) {
       return res.json({
@@ -480,6 +480,12 @@ router.post('/', async (req, res, next) => {
     }
 
     const v = pick.v
+    // If Roulette selected a live Google result that is not yet in our DB, save it now
+    // so the frontend can open a proper venue profile immediately.
+    let liveVenueId = v.id || null
+    if (!liveVenueId && v._src === 'google') {
+      try { liveVenueId = await saveDiscoveredVenue(v, cityName) } catch {}
+    }
     const walkMin = pick.km != null ? Math.max(1, Math.round((pick.km / 5) * 60)) : null
     const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${v.name}, ${v.address || cityName}`)}`
     const whyBits = [...new Set(pick.reasons)]
@@ -495,7 +501,7 @@ router.post('/', async (req, res, next) => {
       address: v.address || null,
       source: v._src === 'google' ? 'Google Places' : 'Sappo',
       google_maps_url: mapUrl,
-      venueId: v.id,
+      venueId: liveVenueId,
       actions: ['Let\u2019s Go', 'Spin Again', 'Add to Plan'],
       debug,
     })
