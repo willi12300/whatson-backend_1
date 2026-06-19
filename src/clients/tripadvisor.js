@@ -22,41 +22,93 @@ function formatLatLong(lat, lng) {
   return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`
 }
 
-async function searchTripAdvisorLocation({ name, lat, lng, address, categorySlug, radiusKm = 3 }) {
+function cleanSearchName(name) {
+  return String(name || '')
+    .replace(/\b(cocktail bar|bar|pub|club|nightclub|restaurant|cafe|coffee shop|venue|liverpool|manchester)\b/ig, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function tripadvisorNameScore(query, itemName) {
+  const q = String(query || '').toLowerCase().trim()
+  const n = String(itemName || '').toLowerCase().trim()
+  if (!q || !n) return 999
+  if (n === q) return 0
+  if (n.includes(q) || q.includes(n)) return 1
+  const qWords = q.split(/\W+/).filter(w => w.length > 2)
+  const nWords = new Set(n.split(/\W+/).filter(Boolean))
+  const overlap = qWords.filter(w => nWords.has(w)).length
+  return 10 - overlap
+}
+
+async function searchTripAdvisorLocation({ name, lat, lng, address, categorySlug, radiusKm = 5 }) {
   if (!hasTripAdvisor() || !name) return null
-  try {
-    const params = {
-      key: config.tripadvisor.key,
-      searchQuery: name,
-      language: 'en',
-      category: normaliseCategory(categorySlug),
-    }
-    const latLong = formatLatLong(lat, lng)
-    if (latLong) params.latLong = latLong
-    if (address) params.address = address
-    if (radiusKm) params.radius = radiusKm
 
-    const res = await axios.get(`${BASE}/location/search`, { params, timeout: 4500 })
-    const locations = res.data?.data || []
-    if (!locations.length) return null
-
-    // Pick closest/name-sensible result. TA returns distance when latLong is supplied.
-    const lower = String(name).toLowerCase()
-    const sorted = locations.slice().sort((a, b) => {
-      const aName = String(a.name || '').toLowerCase()
-      const bName = String(b.name || '').toLowerCase()
-      const aNameScore = aName.includes(lower) || lower.includes(aName) ? 0 : 1
-      const bNameScore = bName.includes(lower) || lower.includes(bName) ? 0 : 1
-      if (aNameScore !== bNameScore) return aNameScore - bNameScore
-      const ad = Number(a.distance || 999)
-      const bd = Number(b.distance || 999)
-      return ad - bd
-    })
-    return sorted[0] || null
-  } catch (err) {
-    logger.error('[tripadvisor] search failed:', err.response?.status || err.message)
-    return null
+  const latLong = formatLatLong(lat, lng)
+  const baseParams = {
+    key: config.tripadvisor.key,
+    language: 'en',
   }
+  if (latLong) baseParams.latLong = latLong
+  if (address) baseParams.address = address
+  if (radiusKm) baseParams.radius = radiusKm
+
+  const cleaned = cleanSearchName(name)
+  const searches = []
+  const cat = normaliseCategory(categorySlug)
+
+  // Try the most specific search first, then progressively loosen it.
+  searches.push({ searchQuery: name, category: cat })
+  if (cleaned && cleaned.toLowerCase() !== String(name).toLowerCase()) searches.push({ searchQuery: cleaned, category: cat })
+  searches.push({ searchQuery: name })
+  if (cleaned) searches.push({ searchQuery: cleaned })
+
+  // Bars/clubs sometimes appear under restaurants or attractions depending on TripAdvisor data.
+  const slug = String(categorySlug || '').toLowerCase()
+  if (['bar', 'pub', 'nightclub', 'club', 'music_venue', 'comedy_club'].includes(slug)) {
+    searches.push({ searchQuery: name, category: 'restaurants' })
+    searches.push({ searchQuery: name, category: 'attractions' })
+    if (cleaned) searches.push({ searchQuery: cleaned, category: 'restaurants' })
+    if (cleaned) searches.push({ searchQuery: cleaned, category: 'attractions' })
+  }
+
+  const seen = new Set()
+  let allLocations = []
+
+  for (const extra of searches) {
+    const key = JSON.stringify(extra)
+    if (seen.has(key)) continue
+    seen.add(key)
+    try {
+      const res = await axios.get(`${BASE}/location/search`, {
+        params: { ...baseParams, ...extra },
+        timeout: 4500,
+      })
+      const locations = res.data?.data || []
+      if (locations.length) {
+        allLocations = allLocations.concat(locations.map(l => ({ ...l, _query: extra.searchQuery })))
+        // If there is a strong exact/contains match, no need to keep trying.
+        if (locations.some(l => tripadvisorNameScore(extra.searchQuery, l.name) <= 1)) break
+      }
+    } catch (err) {
+      logger.error('[tripadvisor] search failed:', err.response?.status || err.message)
+    }
+  }
+
+  if (!allLocations.length) return null
+
+  const sorted = allLocations.slice().sort((a, b) => {
+    const aNameScore = Math.min(tripadvisorNameScore(name, a.name), tripadvisorNameScore(cleaned || name, a.name))
+    const bNameScore = Math.min(tripadvisorNameScore(name, b.name), tripadvisorNameScore(cleaned || name, b.name))
+    if (aNameScore !== bNameScore) return aNameScore - bNameScore
+    const ad = Number(a.distance || 999)
+    const bd = Number(b.distance || 999)
+    return ad - bd
+  })
+
+  const best = sorted[0] || null
+  if (best) logger.info(`[tripadvisor] match ${name} -> ${best.name || best.location_id} (${best.location_id})`)
+  return best
 }
 
 async function getTripAdvisorDetails(locationId) {
