@@ -201,15 +201,20 @@ async function maybeUpdateGoogleProfile(venue) {
   }
 }
 
-async function maybeUpdateTripAdvisor(venue) {
+async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
   if (!hasTripAdvisor()) return venue
   const checked = venue.tripadvisor_last_checked ? new Date(venue.tripadvisor_last_checked) : null
   const isFresh = checked && (Date.now() - checked.getTime()) < 7 * 24 * 60 * 60 * 1000
-  if (isFresh && venue.tripadvisor_rating) return venue
+  if (!force && isFresh && venue.tripadvisor_rating) return venue
 
   try {
+    logger.info(`[venueProfile] TripAdvisor enrich ${force ? 'FORCE ' : ''}${venue.name} (${venue.id})`)
     const ta = await enrichTripAdvisorForVenue(venue)
-    if (!ta?.locationId) return venue
+    if (!ta?.locationId) {
+      logger.info(`[venueProfile] TripAdvisor no match for ${venue.name} (${venue.id})`)
+      await query(`UPDATE venues SET tripadvisor_last_checked=now() WHERE id=$1`, [venue.id]).catch(() => {})
+      return { ...venue, tripadvisor_last_checked: new Date().toISOString() }
+    }
     await query(`
       UPDATE venues SET
         tripadvisor_location_id=$1,
@@ -363,4 +368,50 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
   }
 }
 
-module.exports = { getVenueProfile, deriveSappoScore }
+async function syncTripAdvisorForVenue(id, { force = true } = {}) {
+  const { rows } = await query(`SELECT * FROM venues WHERE id = $1`, [id])
+  if (!rows.length) return null
+  const before = rows[0]
+  const after = await maybeUpdateTripAdvisor(before, { force })
+  return {
+    id: after.id,
+    name: after.name,
+    matched: !!after.tripadvisor_location_id,
+    tripadvisor_location_id: after.tripadvisor_location_id || null,
+    tripadvisor_rating: toNum(after.tripadvisor_rating),
+    tripadvisor_review_count: Number(after.tripadvisor_review_count || 0),
+    tripadvisor_ranking: after.tripadvisor_ranking || null,
+    tripadvisor_url: after.tripadvisor_url || null,
+    tripadvisor_top_review: asJson(after.tripadvisor_top_review),
+  }
+}
+
+async function syncTripAdvisorBatch({ city = null, limit = 25, force = false } = {}) {
+  const params = []
+  const where = []
+  if (city) { params.push(city); where.push(`city = $${params.length}`) }
+  if (!force) where.push(`(tripadvisor_location_id IS NULL OR tripadvisor_rating IS NULL OR tripadvisor_last_checked IS NULL OR tripadvisor_last_checked < now() - interval '7 days')`)
+  params.push(Number(limit) || 25)
+  const sql = `SELECT * FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY rating_count DESC NULLS LAST, rating DESC NULLS LAST LIMIT $${params.length}`
+  const { rows } = await query(sql, params)
+  const results = []
+  for (const venue of rows) {
+    const updated = await maybeUpdateTripAdvisor(venue, { force })
+    results.push({
+      id: updated.id,
+      name: updated.name,
+      matched: !!updated.tripadvisor_location_id,
+      rating: toNum(updated.tripadvisor_rating),
+      reviewCount: Number(updated.tripadvisor_review_count || 0),
+      locationId: updated.tripadvisor_location_id || null,
+    })
+  }
+  return {
+    scanned: rows.length,
+    matched: results.filter(r => r.matched).length,
+    failed: results.filter(r => !r.matched).length,
+    results,
+  }
+}
+
+module.exports = { getVenueProfile, deriveSappoScore, syncTripAdvisorForVenue, syncTripAdvisorBatch }

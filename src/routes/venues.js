@@ -4,7 +4,7 @@ const { distanceMeters } = require('../utils/helpers')
 const { nearbySearch } = require('../services/nearbySearch')
 const { fetchVenues } = require('../clients/google')
 const logger = require('../utils/logger')
-const { getVenueProfile } = require('../services/venueProfile')
+const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch } = require('../services/venueProfile')
 const router = express.Router()
 
 // GET /venues/test-google — quick health check for the Places API (New).
@@ -106,6 +106,29 @@ router.get('/list/trending', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+
+
+// POST /venues/admin/sync-tripadvisor?city=Liverpool&limit=25&force=true
+// Bulk sync TripAdvisor IDs/ratings/reviews into the venue database.
+router.post('/admin/sync-tripadvisor', async (req, res, next) => {
+  try {
+    const out = await syncTripAdvisorBatch({
+      city: req.query.city || req.body?.city || null,
+      limit: parseInt(req.query.limit || req.body?.limit || 25),
+      force: String(req.query.force || req.body?.force || '').toLowerCase() === 'true',
+    })
+    res.json({ tripadvisor: 'SYNC_COMPLETE', ...out })
+  } catch (err) { next(err) }
+})
+
+// POST /venues/:id/sync-tripadvisor — force TripAdvisor enrichment for one venue.
+router.post('/:id/sync-tripadvisor', async (req, res, next) => {
+  try {
+    const result = await syncTripAdvisorForVenue(req.params.id, { force: true })
+    if (!result) return res.status(404).json({ error: 'Venue not found' })
+    res.json({ tripadvisor: result.matched ? 'MATCHED' : 'NO_MATCH', result })
+  } catch (err) { next(err) }
+})
 
 // GET /venues/test-tripadvisor?name=Moose%20Coffee&lat=&lng=&category=cafe
 router.get('/test-tripadvisor', async (req, res) => {
