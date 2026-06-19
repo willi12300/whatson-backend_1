@@ -15,6 +15,7 @@ const config = {
   skiddle:      { key: process.env.SKIDDLE_API_KEY },
   eventbrite:   { token: process.env.EVENTBRITE_TOKEN },
   ticketmaster: { key: process.env.TICKETMASTER_API_KEY },
+  tripadvisor:  { key: process.env.TRIPADVISOR_API_KEY || process.env.TRIPADVISOR_CONTENT_API_KEY },
   syncSecret:   process.env.SYNC_SECRET || 'dev_secret',
 }
 

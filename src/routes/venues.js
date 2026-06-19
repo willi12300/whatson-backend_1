@@ -3,6 +3,8 @@ const { query } = require('../db/pool')
 const { distanceMeters } = require('../utils/helpers')
 const { nearbySearch } = require('../services/nearbySearch')
 const { fetchVenues } = require('../clients/google')
+const logger = require('../utils/logger')
+const { getVenueProfile } = require('../services/venueProfile')
 const router = express.Router()
 
 // GET /venues/test-google — quick health check for the Places API (New).
@@ -104,22 +106,42 @@ router.get('/list/trending', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+
+// GET /venues/test-tripadvisor?name=Moose%20Coffee&lat=&lng=&category=cafe
+router.get('/test-tripadvisor', async (req, res) => {
+  try {
+    const { hasTripAdvisor, enrichTripAdvisorForVenue } = require('../clients/tripadvisor')
+    const keyPresent = hasTripAdvisor()
+    if (!keyPresent) return res.json({ tripadvisor: 'MISSING_KEY', keyPresent })
+    const venue = {
+      id: 0,
+      name: req.query.name || 'Moose Coffee',
+      lat: req.query.lat ? parseFloat(req.query.lat) : 53.4084,
+      lng: req.query.lng ? parseFloat(req.query.lng) : -2.9916,
+      address: req.query.address || 'Liverpool',
+      category_slug: req.query.category || 'cafe',
+    }
+    const ta = await enrichTripAdvisorForVenue(venue)
+    res.json({ tripadvisor: ta ? 'WORKING' : 'NO_MATCH', keyPresent, sample: ta })
+  } catch (e) {
+    res.json({ tripadvisor: 'ERROR', error: e.message, keyPresent: !!process.env.TRIPADVISOR_API_KEY || !!process.env.TRIPADVISOR_CONTENT_API_KEY })
+  }
+})
+
+// GET /venues/:id/profile?lat=&lng= — enriched profile for the SAPPO venue profile UX.
+router.get('/:id/profile', async (req, res, next) => {
+  try {
+    const profile = await getVenueProfile(req.params.id, { lat: req.query.lat, lng: req.query.lng })
+    if (!profile) return res.status(404).json({ error: 'Venue not found' })
+    res.json(profile)
+  } catch (err) { next(err) }
+})
+
 router.get('/:id', async (req, res, next) => {
   try {
-    const { rows } = await query(`SELECT * FROM venues WHERE id = $1`, [req.params.id])
-    if (!rows.length) return res.status(404).json({ error: 'Venue not found' })
-    const events = await query(`SELECT id,name,description,image_url,category,genre,starts_at,ends_at,is_free,min_price,ticket_url FROM events WHERE venue_id=$1 AND status='active' AND starts_at>=now() ORDER BY starts_at ASC LIMIT 20`, [req.params.id])
-    const sources = await query(`SELECT provider,provider_id FROM venue_sources WHERE venue_id=$1`, [req.params.id])
-    const offers = await query(`SELECT id,title,description,discount_type,estimated_value,ends_at,redeem_url FROM offers WHERE venue_id=$1 AND active=TRUE AND (ends_at IS NULL OR ends_at>=now()) ORDER BY created_at DESC`, [req.params.id])
-
-    // Busy estimate (legal heuristic)
-    let busy = null
-    try {
-      const { estimateBusy } = require('../services/busyEstimate')
-      busy = estimateBusy(rows[0], { when: new Date(), events: events.rows.map(e => ({ ...e, venue_id: parseInt(req.params.id) })) })
-    } catch (e) { /* non-fatal */ }
-
-    res.json({ ...rows[0], events: events.rows, sources: sources.rows, offers: offers.rows, busy })
+    const profile = await getVenueProfile(req.params.id, { lat: req.query.lat, lng: req.query.lng })
+    if (!profile) return res.status(404).json({ error: 'Venue not found' })
+    res.json(profile)
   } catch (err) { next(err) }
 })
 
