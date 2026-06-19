@@ -28,6 +28,10 @@ function driveMinutes(meters) {
   return Math.max(2, Math.round(Number(meters) / 420))
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 function buildGoogleMapsUrl(v) {
   if (v.google_maps_url) return v.google_maps_url
   if (v.google_place_id) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(v.name)}&query_place_id=${encodeURIComponent(v.google_place_id)}`
@@ -194,6 +198,8 @@ async function maybeUpdateGoogleProfile(venue) {
       photos: nextPhotos,
       cover_photo: venue.cover_photo || cover,
       profile_last_enriched: new Date().toISOString(),
+      tripadvisor_status: 'synced',
+      tripadvisor_debug: ta.debug || null,
     }
   } catch (e) {
     logger.error('[venueProfile] Google profile update skipped:', e.message)
@@ -209,11 +215,26 @@ async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
 
   try {
     logger.info(`[venueProfile] TripAdvisor enrich ${force ? 'FORCE ' : ''}${venue.name} (${venue.id})`)
-    const ta = await enrichTripAdvisorForVenue(venue)
-    if (!ta?.locationId) {
+    const ta = await enrichTripAdvisorForVenue(venue, { debug: true })
+    if (ta?.rateLimited) {
+      logger.error(`[venueProfile] TripAdvisor rate limited for ${venue.name} (${venue.id})`)
+      // Do not mark as a permanent no-match. Keep existing cached data if any.
+      return {
+        ...venue,
+        tripadvisor_status: 'rate_limited',
+        tripadvisor_debug: ta.debug || null,
+      }
+    }
+    if (ta?.noMatch || !ta?.locationId) {
       logger.info(`[venueProfile] TripAdvisor no match for ${venue.name} (${venue.id})`)
       await query(`UPDATE venues SET tripadvisor_last_checked=now() WHERE id=$1`, [venue.id]).catch(() => {})
-      return { ...venue, tripadvisor_last_checked: new Date().toISOString() }
+      return {
+        ...venue,
+        tripadvisor_last_checked: new Date().toISOString(),
+        tripadvisor_status: 'no_match',
+        tripadvisor_debug: ta?.debug || null,
+        tripadvisor_candidates: ta?.candidates || [],
+      }
     }
     await query(`
       UPDATE venues SET
@@ -356,6 +377,12 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     whyChosen,
     tripadvisor_top_review: asJson(venue.tripadvisor_top_review),
     tripadvisorTopReview: asJson(venue.tripadvisor_top_review),
+    tripadvisor_status: venue.tripadvisor_status || (tripRating ? 'synced' : 'pending'),
+    tripadvisorStatus: venue.tripadvisor_status || (tripRating ? 'synced' : 'pending'),
+    tripadvisor_debug: venue.tripadvisor_debug || null,
+    tripadvisorDebug: venue.tripadvisor_debug || null,
+    tripadvisor_candidates: venue.tripadvisor_candidates || [],
+    tripadvisorCandidates: venue.tripadvisor_candidates || [],
     top_review: topReview(venue),
     topReview: topReview(venue),
     vibe_tags: vibeTags,
@@ -377,12 +404,15 @@ async function syncTripAdvisorForVenue(id, { force = true } = {}) {
     id: after.id,
     name: after.name,
     matched: !!after.tripadvisor_location_id,
+    status: after.tripadvisor_status || (after.tripadvisor_location_id ? 'synced' : 'no_match'),
     tripadvisor_location_id: after.tripadvisor_location_id || null,
     tripadvisor_rating: toNum(after.tripadvisor_rating),
     tripadvisor_review_count: Number(after.tripadvisor_review_count || 0),
     tripadvisor_ranking: after.tripadvisor_ranking || null,
     tripadvisor_url: after.tripadvisor_url || null,
     tripadvisor_top_review: asJson(after.tripadvisor_top_review),
+    debug: after.tripadvisor_debug || null,
+    candidates: after.tripadvisor_candidates || [],
   }
 }
 
@@ -401,15 +431,21 @@ async function syncTripAdvisorBatch({ city = null, limit = 25, force = false } =
       id: updated.id,
       name: updated.name,
       matched: !!updated.tripadvisor_location_id,
+      status: updated.tripadvisor_status || (updated.tripadvisor_location_id ? 'synced' : 'no_match'),
       rating: toNum(updated.tripadvisor_rating),
       reviewCount: Number(updated.tripadvisor_review_count || 0),
       locationId: updated.tripadvisor_location_id || null,
+      debug: updated.tripadvisor_debug || null,
+      candidates: updated.tripadvisor_candidates || [],
     })
+    // Avoid hammering TripAdvisor during bulk sync.
+    await sleep(1500)
   }
   return {
     scanned: rows.length,
     matched: results.filter(r => r.matched).length,
     failed: results.filter(r => !r.matched).length,
+    rateLimited: results.filter(r => r.status === 'rate_limited').length,
     results,
   }
 }
