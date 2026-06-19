@@ -45,6 +45,20 @@ function cacheKey({ cityName, lat, lng, radiusMiles }) {
   return `${cityName}|${rl}|${rg}|${radiusMiles}`
 }
 
+function normaliseGoogleCategory(cat) {
+  const c = String(cat || '').toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_')
+  return ({
+    night_club: 'night_club',
+    tourist_attraction: 'tourist_attraction',
+    art_gallery: 'art_gallery',
+    historical_landmark: 'historical_landmark',
+    performing_arts_theater: 'theatre',
+    bakery: 'bakery',
+    meal_takeaway: 'meal_takeaway',
+    meal_delivery: 'meal_delivery',
+  })[c] || c
+}
+
 // Gather candidates from ALL sources, with a per-source audit.
 // Returns { venues:[], events:[], audit:{} }
 async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5, googleTypes = null }) {
@@ -93,13 +107,21 @@ async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5, goo
     const fetched = await google.fetchVenues(lat, lng, radiusM, { types, parallel: true, timeoutMs: TIMEOUT })
     audit.googlePlaces.ok = true; audit.googlePlaces.count = fetched.length
     return fetched.map(v => ({
-      id: null, name: v.name, category_slug: v.category || v.primaryType || 'other',
-      rating: v.rating || null, rating_count: v.userRatingCount || v.rating_count || null,
+      id: null,
+      provider_id: v.providerId || null,
+      name: v.name,
+      category_slug: normaliseGoogleCategory(v.category || v.primaryType || 'other'),
+      google_types: v.types || [],
+      rating: v.rating || null,
+      rating_count: v.userRatingCount || v.ratingCount || v.rating_count || null,
       price_level: v.priceLevel || v.price_level || null,
       address: v.formattedAddress || v.address || null,
-      lat: v.location?.latitude ?? v.lat, lng: v.location?.longitude ?? v.lng,
+      lat: v.location?.latitude ?? v.lat,
+      lng: v.location?.longitude ?? v.lng,
       opening_hours: v.regularOpeningHours || v.opening_hours || null,
-      website: v.websiteUri || null, _src: 'google',
+      website: v.websiteUri || v.website || null,
+      photos: v.photos || [],
+      _src: 'google',
     }))
   })() : Promise.resolve([])
 
