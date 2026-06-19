@@ -54,7 +54,16 @@ async function enrichVenueBackground(venueId, reason = 'background') {
     [venueId]
   ).catch(() => {})
 
-  // Google profile enrichment happens in getVenueProfile. TripAdvisor sync is safe/cached.
+  // Google profile enrichment: place ID, photos, maps URL, opening hours, rating and Google review snippets.
+  try {
+    const { syncGoogleForVenue } = require('./venueProfile')
+    const google = await syncGoogleForVenue(venueId, { force: false })
+    logger.info(`[enrichment] Google venue ${venueId}: ${google?.status || 'unknown'}`)
+  } catch (e) {
+    logger.error(`[enrichment] Google profile skipped for ${venueId}: ${e.message}`)
+  }
+
+  // TripAdvisor sync is safe/cached.
   try {
     const { syncTripAdvisorForVenue } = require('./venueProfile')
     const ta = await syncTripAdvisorForVenue(venueId, { force: false })

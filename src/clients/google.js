@@ -101,7 +101,7 @@ async function findPlace(textQuery) {
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': config.google.key,
-          'X-Goog-FieldMask': 'places.location,places.formattedAddress,places.displayName,places.rating,places.photos',
+          'X-Goog-FieldMask': 'places.id,places.location,places.formattedAddress,places.displayName,places.rating,places.userRatingCount,places.photos,places.types,places.primaryType,places.websiteUri,places.googleMapsUri',
         },
         timeout: 8000,
       }
@@ -118,10 +118,63 @@ async function findPlace(textQuery) {
       address: p.formattedAddress || null,
       name: p.displayName?.text || null,
       rating: p.rating || null,
+      ratingCount: p.userRatingCount ?? null,
+      providerId: p.id || null,
+      googlePlaceId: p.id || null,
+      types: p.types || [],
+      primaryType: p.primaryType || null,
+      website: p.websiteUri || null,
+      googleMapsUrl: p.googleMapsUri || null,
       photoUrl,
     }
   } catch (e) {
     logger.error('[google] findPlace failed:', e.response?.status || e.message)
+    return null
+  }
+}
+
+
+// Search Google Places by venue name/address and return a full details object.
+// This is used when an older DB venue does not yet have a google_place_id saved.
+async function findPlaceDetails(textQuery, timeoutMs = 8000) {
+  if (!config.google.key || !textQuery) return null
+  try {
+    const res = await axios.post(
+      'https://places.googleapis.com/v1/places:searchText',
+      { textQuery, maxResultCount: 3 },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': config.google.key,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.types,places.primaryType,places.websiteUri,places.googleMapsUri,places.businessStatus',
+        },
+        timeout: timeoutMs,
+      }
+    )
+    const places = res.data?.places || []
+    if (!places.length) return null
+    // Prefer the first result from Google, then fetch proper details/reviews by place ID.
+    const p = places[0]
+    if (!p?.id) return null
+    const details = await getPlaceDetails(p.id, timeoutMs)
+    return details || {
+      provider: 'google',
+      providerId: p.id,
+      name: p.displayName?.text || null,
+      address: p.formattedAddress || null,
+      lat: p.location?.latitude,
+      lng: p.location?.longitude,
+      rating: p.rating ?? null,
+      ratingCount: p.userRatingCount ?? null,
+      website: p.websiteUri || null,
+      googleMapsUrl: p.googleMapsUri || null,
+      businessStatus: p.businessStatus || null,
+      photos: [],
+      reviews: [],
+      raw: p,
+    }
+  } catch (e) {
+    logger.error('[google] findPlaceDetails failed:', e.response?.status || e.message)
     return null
   }
 }
@@ -213,4 +266,4 @@ async function getPlaceDetails(placeId, timeoutMs = 8000) {
 }
 
 
-module.exports = { fetchVenues, findPlace, reverseGeocode, getPlaceDetails }
+module.exports = { fetchVenues, findPlace, findPlaceDetails, reverseGeocode, getPlaceDetails }

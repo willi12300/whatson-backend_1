@@ -4,7 +4,7 @@ const { distanceMeters } = require('../utils/helpers')
 const { nearbySearch } = require('../services/nearbySearch')
 const { fetchVenues } = require('../clients/google')
 const logger = require('../utils/logger')
-const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch } = require('../services/venueProfile')
+const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch } = require('../services/venueProfile')
 const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
 const router = express.Router()
 
@@ -122,6 +122,19 @@ router.post('/admin/sync-tripadvisor', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// POST /venues/admin/sync-google?city=Liverpool&limit=25&force=true
+// Bulk sync Google Place IDs/details/review snippets into the venue database.
+router.post('/admin/sync-google', async (req, res, next) => {
+  try {
+    const out = await syncGoogleBatch({
+      city: req.query.city || req.body?.city || null,
+      limit: parseInt(req.query.limit || req.body?.limit || 25),
+      force: String(req.query.force || req.body?.force || '').toLowerCase() === 'true',
+    })
+    res.json({ google: 'SYNC_COMPLETE', ...out })
+  } catch (err) { next(err) }
+})
+
 
 // GET /venues/admin/enrichment-status — see background enrichment queue health.
 router.get('/admin/enrichment-status', async (req, res) => {
@@ -154,6 +167,15 @@ router.post('/admin/queue-enrichment', async (req, res, next) => {
 router.post('/:id/queue-enrichment', async (req, res) => {
   const queued = scheduleVenueEnrichment(req.params.id, 'manual_single_queue')
   res.json({ queued, status: getQueueStatus() })
+})
+
+// POST /venues/:id/sync-google — force Google enrichment for one venue.
+router.post('/:id/sync-google', async (req, res, next) => {
+  try {
+    const result = await syncGoogleForVenue(req.params.id, { force: true })
+    if (!result) return res.status(404).json({ error: 'Venue not found' })
+    res.json({ google: result.matched ? 'MATCHED' : 'NO_MATCH', result })
+  } catch (err) { next(err) }
 })
 
 // POST /venues/:id/sync-tripadvisor — force TripAdvisor enrichment for one venue.

@@ -2,7 +2,7 @@ const { query } = require('../db/pool')
 const { distanceMeters } = require('../utils/helpers')
 const { estimateBusy } = require('./busyEstimate')
 const { enrichTripAdvisorForVenue, hasTripAdvisor } = require('../clients/tripadvisor')
-const { getPlaceDetails } = require('../clients/google')
+const { getPlaceDetails, findPlaceDetails } = require('../clients/google')
 const logger = require('../utils/logger')
 
 function toNum(x) {
@@ -134,22 +134,62 @@ async function getGooglePlaceIdForVenue(venue) {
   return src?.rows?.[0]?.provider_id || null
 }
 
-async function maybeUpdateGoogleProfile(venue) {
-  const checked = venue.profile_last_enriched ? new Date(venue.profile_last_enriched) : null
+function buildGoogleSearchQueries(venue) {
+  const name = String(venue.name || '').trim()
+  const city = String(venue.city || '').trim()
+  const address = String(venue.address || '').trim()
+  const postcode = String(venue.postcode || '').trim()
+  const queries = []
+  if (name && city) queries.push(`${name} ${city}`)
+  if (name && postcode) queries.push(`${name} ${postcode}`)
+  if (name && address) queries.push(`${name} ${address}`)
+  if (name) queries.push(name)
+  return [...new Set(queries.filter(Boolean))].slice(0, 4)
+}
+
+async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
+  const checked = venue.google_last_checked ? new Date(venue.google_last_checked) : (venue.profile_last_enriched ? new Date(venue.profile_last_enriched) : null)
   const googleReviews = asJson(venue.google_review_sample, [])
   const hasReviews = Array.isArray(googleReviews) && googleReviews.some(r => r?.text)
-  const isFresh = checked && (Date.now() - checked.getTime()) < 3 * 24 * 60 * 60 * 1000
-  if (isFresh && venue.google_place_id && hasReviews) return venue
+  const isFresh = checked && (Date.now() - checked.getTime()) < 7 * 24 * 60 * 60 * 1000
+  if (!force && isFresh && venue.google_place_id && (hasReviews || venue.rating)) return venue
 
+  const debug = { queriesTried: [], method: null, placeId: null, status: 'started' }
   try {
-    const placeId = await getGooglePlaceIdForVenue(venue)
-    if (!placeId) return venue
-    const details = await getPlaceDetails(placeId)
-    if (!details) return { ...venue, google_place_id: placeId }
+    let placeId = await getGooglePlaceIdForVenue(venue)
+    let details = null
+
+    if (placeId) {
+      debug.method = 'place_id'
+      debug.placeId = placeId
+      details = await getPlaceDetails(placeId)
+    }
+
+    // Older/manual venues often have no google_place_id even though Google has the place.
+    // In that case, search by name/city/address, then cache the returned place ID forever.
+    if (!details) {
+      for (const q of buildGoogleSearchQueries(venue)) {
+        debug.queriesTried.push(q)
+        details = await findPlaceDetails(q)
+        if (details?.providerId) {
+          placeId = details.providerId
+          debug.method = 'text_search'
+          debug.placeId = placeId
+          break
+        }
+      }
+    }
+
+    if (!details) {
+      debug.status = 'no_match'
+      await query(`UPDATE venues SET google_last_checked=now(), google_status='no_match', google_debug=$2 WHERE id=$1`, [venue.id, JSON.stringify(debug)]).catch(() => {})
+      return { ...venue, google_status: 'no_match', google_debug: debug }
+    }
 
     const nextPhotos = details.photos?.length ? details.photos : asJson(venue.photos, [])
     const cover = venue.cover_photo || details.photos?.[0]?.url || null
     const reviews = details.reviews || []
+    debug.status = 'synced'
 
     await query(`
       UPDATE venues SET
@@ -165,10 +205,13 @@ async function maybeUpdateGoogleProfile(venue) {
         google_review_sample=$10,
         photos=COALESCE($11, photos),
         cover_photo=COALESCE(cover_photo, $12),
-        profile_last_enriched=now()
+        profile_last_enriched=now(),
+        google_last_checked=now(),
+        google_status='synced',
+        google_debug=$14
       WHERE id=$13
     `, [
-      placeId,
+      placeId || details.providerId,
       details.googleMapsUrl,
       details.rating,
       details.ratingCount,
@@ -181,11 +224,21 @@ async function maybeUpdateGoogleProfile(venue) {
       nextPhotos ? JSON.stringify(nextPhotos) : null,
       cover,
       venue.id,
+      JSON.stringify(debug),
     ])
+
+    if (placeId) {
+      await query(
+        `INSERT INTO venue_sources (venue_id, provider, provider_id, raw)
+         VALUES ($1, 'google', $2, $3)
+         ON CONFLICT (provider, provider_id) DO UPDATE SET venue_id=EXCLUDED.venue_id, raw=EXCLUDED.raw`,
+        [venue.id, placeId, details.raw ? JSON.stringify(details.raw) : null]
+      ).catch(() => {})
+    }
 
     return {
       ...venue,
-      google_place_id: placeId,
+      google_place_id: placeId || details.providerId || venue.google_place_id,
       google_maps_url: details.googleMapsUrl || venue.google_maps_url,
       rating: details.rating ?? venue.rating,
       rating_count: details.ratingCount ?? venue.rating_count,
@@ -198,10 +251,16 @@ async function maybeUpdateGoogleProfile(venue) {
       photos: nextPhotos,
       cover_photo: venue.cover_photo || cover,
       profile_last_enriched: new Date().toISOString(),
+      google_last_checked: new Date().toISOString(),
+      google_status: 'synced',
+      google_debug: debug,
     }
   } catch (e) {
+    debug.status = 'error'
+    debug.error = e.message
     logger.error('[venueProfile] Google profile update skipped:', e.message)
-    return venue
+    await query(`UPDATE venues SET google_last_checked=now(), google_status='error', google_debug=$2 WHERE id=$1`, [venue.id, JSON.stringify(debug)]).catch(() => {})
+    return { ...venue, google_status: 'error', google_debug: debug }
   }
 }
 
@@ -383,6 +442,10 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     whyChosen,
     tripadvisor_top_review: asJson(venue.tripadvisor_top_review),
     tripadvisorTopReview: asJson(venue.tripadvisor_top_review),
+    google_status: venue.google_status || (venue.google_place_id ? 'synced' : 'pending'),
+    googleStatus: venue.google_status || (venue.google_place_id ? 'synced' : 'pending'),
+    google_debug: venue.google_debug || null,
+    googleDebug: venue.google_debug || null,
     tripadvisor_status: venue.tripadvisor_status || (tripRating ? 'synced' : 'pending'),
     tripadvisorStatus: venue.tripadvisor_status || (tripRating ? 'synced' : 'pending'),
     tripadvisor_debug: venue.tripadvisor_debug || null,
@@ -456,4 +519,54 @@ async function syncTripAdvisorBatch({ city = null, limit = 25, force = false } =
   }
 }
 
-module.exports = { getVenueProfile, deriveSappoScore, syncTripAdvisorForVenue, syncTripAdvisorBatch }
+
+async function syncGoogleForVenue(id, { force = true } = {}) {
+  const { rows } = await query(`SELECT * FROM venues WHERE id = $1`, [id])
+  if (!rows.length) return null
+  const after = await maybeUpdateGoogleProfile(rows[0], { force })
+  return {
+    id: after.id,
+    name: after.name,
+    matched: !!after.google_place_id,
+    status: after.google_status || (after.google_place_id ? 'synced' : 'no_match'),
+    google_place_id: after.google_place_id || null,
+    google_rating: toNum(after.rating),
+    google_review_count: Number(after.rating_count || 0),
+    google_maps_url: after.google_maps_url || null,
+    google_review_sample_count: Array.isArray(asJson(after.google_review_sample, [])) ? asJson(after.google_review_sample, []).length : 0,
+    debug: after.google_debug || null,
+  }
+}
+
+async function syncGoogleBatch({ city = null, limit = 25, force = false } = {}) {
+  const params = []
+  const where = []
+  if (city) { params.push(city); where.push(`city = $${params.length}`) }
+  if (!force) where.push(`(google_place_id IS NULL OR rating IS NULL OR google_last_checked IS NULL OR google_last_checked < now() - interval '7 days')`)
+  params.push(Number(limit) || 25)
+  const sql = `SELECT * FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY rating_count DESC NULLS LAST, rating DESC NULLS LAST LIMIT $${params.length}`
+  const { rows } = await query(sql, params)
+  const results = []
+  for (const venue of rows) {
+    const updated = await maybeUpdateGoogleProfile(venue, { force })
+    results.push({
+      id: updated.id,
+      name: updated.name,
+      matched: !!updated.google_place_id,
+      status: updated.google_status || (updated.google_place_id ? 'synced' : 'no_match'),
+      rating: toNum(updated.rating),
+      reviewCount: Number(updated.rating_count || 0),
+      placeId: updated.google_place_id || null,
+      debug: updated.google_debug || null,
+    })
+    await sleep(400)
+  }
+  return {
+    scanned: rows.length,
+    matched: results.filter(r => r.matched).length,
+    failed: results.filter(r => !r.matched).length,
+    results,
+  }
+}
+
+module.exports = { getVenueProfile, deriveSappoScore, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch }
