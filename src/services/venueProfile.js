@@ -2,11 +2,20 @@ const { query } = require('../db/pool')
 const { distanceMeters } = require('../utils/helpers')
 const { estimateBusy } = require('./busyEstimate')
 const { enrichTripAdvisorForVenue, hasTripAdvisor } = require('../clients/tripadvisor')
+const { getPlaceDetails } = require('../clients/google')
 const logger = require('../utils/logger')
 
 function toNum(x) {
   const n = Number(x)
   return Number.isFinite(n) ? n : null
+}
+
+function asJson(value, fallback = null) {
+  if (value == null) return fallback
+  if (typeof value === 'string') {
+    try { return JSON.parse(value) } catch { return fallback }
+  }
+  return value
 }
 
 function walkMinutes(meters) {
@@ -106,14 +115,89 @@ function buildWhy(v, ctx) {
 }
 
 function topReview(v) {
-  if (v.tripadvisor_top_review?.text) return v.tripadvisor_top_review
-  const google = Array.isArray(v.google_review_sample) ? v.google_review_sample[0] : null
-  if (google?.text) return google
-  return {
-    text: 'Strong ratings and a good local reputation make this worth a look.',
-    author: 'Sappo',
-    rating: 5,
-    source: 'sappo',
+  const taReview = asJson(v.tripadvisor_top_review)
+  if (taReview?.text) return { ...taReview, source: taReview.source || 'tripadvisor' }
+  const googleReviews = asJson(v.google_review_sample, [])
+  const google = Array.isArray(googleReviews) ? googleReviews.find(r => r?.text) : null
+  if (google?.text) return { ...google, source: google.source || 'google' }
+  return null
+}
+
+
+async function getGooglePlaceIdForVenue(venue) {
+  if (venue.google_place_id) return venue.google_place_id
+  const src = await query(`SELECT provider_id FROM venue_sources WHERE venue_id=$1 AND provider='google' LIMIT 1`, [venue.id]).catch(() => null)
+  return src?.rows?.[0]?.provider_id || null
+}
+
+async function maybeUpdateGoogleProfile(venue) {
+  const checked = venue.profile_last_enriched ? new Date(venue.profile_last_enriched) : null
+  const googleReviews = asJson(venue.google_review_sample, [])
+  const hasReviews = Array.isArray(googleReviews) && googleReviews.some(r => r?.text)
+  const isFresh = checked && (Date.now() - checked.getTime()) < 3 * 24 * 60 * 60 * 1000
+  if (isFresh && venue.google_place_id && hasReviews) return venue
+
+  try {
+    const placeId = await getGooglePlaceIdForVenue(venue)
+    if (!placeId) return venue
+    const details = await getPlaceDetails(placeId)
+    if (!details) return { ...venue, google_place_id: placeId }
+
+    const nextPhotos = details.photos?.length ? details.photos : asJson(venue.photos, [])
+    const cover = venue.cover_photo || details.photos?.[0]?.url || null
+    const reviews = details.reviews || []
+
+    await query(`
+      UPDATE venues SET
+        google_place_id=$1,
+        google_maps_url=COALESCE($2, google_maps_url),
+        rating=COALESCE($3, rating),
+        rating_count=COALESCE($4, rating_count),
+        price_level=COALESCE($5, price_level),
+        opening_hours=COALESCE($6, opening_hours),
+        business_status=COALESCE($7, business_status),
+        phone=COALESCE(phone, $8),
+        website=COALESCE(website, $9),
+        google_review_sample=$10,
+        photos=COALESCE($11, photos),
+        cover_photo=COALESCE(cover_photo, $12),
+        profile_last_enriched=now()
+      WHERE id=$13
+    `, [
+      placeId,
+      details.googleMapsUrl,
+      details.rating,
+      details.ratingCount,
+      details.priceLevel,
+      details.openingHours ? JSON.stringify(details.openingHours) : null,
+      details.businessStatus,
+      details.phone,
+      details.website,
+      JSON.stringify(reviews),
+      nextPhotos ? JSON.stringify(nextPhotos) : null,
+      cover,
+      venue.id,
+    ])
+
+    return {
+      ...venue,
+      google_place_id: placeId,
+      google_maps_url: details.googleMapsUrl || venue.google_maps_url,
+      rating: details.rating ?? venue.rating,
+      rating_count: details.ratingCount ?? venue.rating_count,
+      price_level: details.priceLevel ?? venue.price_level,
+      opening_hours: details.openingHours || venue.opening_hours,
+      business_status: details.businessStatus || venue.business_status,
+      phone: venue.phone || details.phone,
+      website: venue.website || details.website,
+      google_review_sample: reviews,
+      photos: nextPhotos,
+      cover_photo: venue.cover_photo || cover,
+      profile_last_enriched: new Date().toISOString(),
+    }
+  } catch (e) {
+    logger.error('[venueProfile] Google profile update skipped:', e.message)
+    return venue
   }
 }
 
@@ -170,6 +254,9 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
   if (!rows.length) return null
   let venue = rows[0]
 
+  // Google detail enrichment gives us real review snippets and maps URLs for the profile.
+  venue = await maybeUpdateGoogleProfile(venue)
+
   // TripAdvisor is on-demand and cached, so the profile gets richer without blocking the whole app forever.
   venue = await maybeUpdateTripAdvisor(venue)
 
@@ -213,7 +300,8 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     WHERE id=$7
   `, [sappoScore, JSON.stringify(whyChosen), JSON.stringify(vibeTags), busyLevel, busyEstimate.reason, mapsUrl, id]).catch(() => {})
 
-  const photos = Array.isArray(venue.photos) ? venue.photos : []
+  const photos = Array.isArray(asJson(venue.photos, [])) ? asJson(venue.photos, []) : []
+  const googleReviewSample = Array.isArray(asJson(venue.google_review_sample, [])) ? asJson(venue.google_review_sample, []) : []
   const cover = venue.cover_photo || photos?.[0]?.url || photos?.[0] || null
 
   return {
@@ -238,6 +326,8 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     google_rating: googleRating,
     google_reviews: googleReviews,
     google_review_count: googleReviews,
+    google_review_sample: googleReviewSample,
+    googleReviewSample,
     tripadvisor_rating: tripRating,
     tripadvisorRating: tripRating,
     tripadvisor_reviews: tripReviews,
@@ -259,8 +349,8 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     busy_reason: busyEstimate.reason,
     why_chosen: whyChosen,
     whyChosen,
-    tripadvisor_top_review: venue.tripadvisor_top_review || null,
-    tripadvisorTopReview: venue.tripadvisor_top_review || null,
+    tripadvisor_top_review: asJson(venue.tripadvisor_top_review),
+    tripadvisorTopReview: asJson(venue.tripadvisor_top_review),
     top_review: topReview(venue),
     topReview: topReview(venue),
     vibe_tags: vibeTags,

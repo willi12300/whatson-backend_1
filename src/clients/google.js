@@ -148,4 +148,69 @@ async function reverseGeocode(lat, lng) {
   }
 }
 
-module.exports = { fetchVenues, findPlace, reverseGeocode }
+
+// Fetch richer details for a known Google Place ID, including review snippets where Google returns them.
+// Used by venue profiles as a fallback when TripAdvisor does not have a match.
+async function getPlaceDetails(placeId, timeoutMs = 8000) {
+  if (!config.google.key || !placeId) return null
+  try {
+    const res = await axios.get(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`, {
+      headers: {
+        'X-Goog-Api-Key': config.google.key,
+        'X-Goog-FieldMask': [
+          'id',
+          'displayName',
+          'formattedAddress',
+          'location',
+          'rating',
+          'userRatingCount',
+          'priceLevel',
+          'regularOpeningHours',
+          'photos',
+          'internationalPhoneNumber',
+          'websiteUri',
+          'businessStatus',
+          'googleMapsUri',
+          'reviews'
+        ].join(','),
+      },
+      timeout: timeoutMs,
+    })
+    const p = res.data || {}
+    return {
+      provider: 'google',
+      providerId: p.id || placeId,
+      name: p.displayName?.text || null,
+      address: p.formattedAddress || null,
+      lat: p.location?.latitude,
+      lng: p.location?.longitude,
+      rating: p.rating ?? null,
+      ratingCount: p.userRatingCount ?? null,
+      priceLevel: p.priceLevel ?? null,
+      phone: p.internationalPhoneNumber || null,
+      website: p.websiteUri || null,
+      googleMapsUrl: p.googleMapsUri || null,
+      businessStatus: p.businessStatus || null,
+      openingHours: p.regularOpeningHours || null,
+      photos: (p.photos || []).slice(0, 6).map(ph => ({
+        url: `https://places.googleapis.com/v1/${ph.name}/media?maxWidthPx=900&key=${config.google.key}`,
+        source: 'google',
+      })),
+      reviews: (p.reviews || []).map(r => ({
+        text: r.text?.text || r.originalText?.text || '',
+        author: r.authorAttribution?.displayName || 'Google user',
+        rating: r.rating || null,
+        publishedDate: r.publishTime || null,
+        url: r.googleMapsUri || p.googleMapsUri || null,
+        source: 'google',
+      })).filter(r => r.text),
+      raw: p,
+    }
+  } catch (e) {
+    logger.error('[google] getPlaceDetails failed:', e.response?.status || e.message)
+    return null
+  }
+}
+
+
+module.exports = { fetchVenues, findPlace, reverseGeocode, getPlaceDetails }
