@@ -11,11 +11,11 @@ router.get('/', async (req, res, next) => {
     if (Number.isNaN(lat) || Number.isNaN(lng)) {
       return res.status(400).json({ error: 'lat and lng required' })
     }
-    const weather = await getWeather(lat, lng)
+    const weather = await getWeather(lat, lng, { force: req.query.force === 'true' })
     res.json(weather)
   } catch (err) {
     logger.error('weather:', err.message)
-    res.status(502).json({ error: 'weather_unavailable' })
+    res.status(502).json({ error: 'weather_unavailable', message: err.message })
   }
 })
 

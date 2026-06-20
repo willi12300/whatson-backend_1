@@ -1,9 +1,45 @@
 // src/clients/weather.js
 // Open-Meteo weather client — no API key needed.
-// Returns current conditions + next 12 hours, with a simple human insight.
+// Returns current conditions + next 12 hours, with caching/throttling so the app
+// does not hammer the weather API on every homepage render/tab change.
 
 const axios = require('axios')
 const logger = require('../utils/logger')
+
+const CACHE_TTL_MS = Number(process.env.WEATHER_CACHE_TTL_MS || 20 * 60 * 1000) // fresh for 20 mins
+const STALE_TTL_MS = Number(process.env.WEATHER_STALE_TTL_MS || 6 * 60 * 60 * 1000) // fallback for 6 hours
+const REQUEST_TIMEOUT_MS = Number(process.env.WEATHER_TIMEOUT_MS || 8000)
+
+// In-memory cache is enough for Railway single-service runtime and avoids 429s.
+// Key is rounded location, so tiny GPS movements don't create new API calls.
+const cache = new Map()
+const inflight = new Map()
+
+function weatherCacheKey(lat, lng) {
+  const safeLat = Number(lat)
+  const safeLng = Number(lng)
+  if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return null
+  return `${safeLat.toFixed(2)},${safeLng.toFixed(2)}`
+}
+
+function isFresh(entry) {
+  return entry && Date.now() - entry.fetchedAt < CACHE_TTL_MS
+}
+
+function isStaleUsable(entry) {
+  return entry && Date.now() - entry.fetchedAt < STALE_TTL_MS
+}
+
+function withCacheMeta(data, status, fetchedAt) {
+  return {
+    ...data,
+    cache: {
+      status, // fresh | stale | live
+      fetchedAt: new Date(fetchedAt || Date.now()).toISOString(),
+      ttlMinutes: Math.round(CACHE_TTL_MS / 60000),
+    },
+  }
+}
 
 // WMO weather code → { label, icon, indoor } (indoor = leans toward indoor plans)
 const WMO = {
@@ -36,7 +72,41 @@ const WMO = {
 }
 const code = c => WMO[c] || { label: 'Unknown', icon: '🌡️', indoor: false }
 
-async function getWeather(lat, lng) {
+async function getWeather(lat, lng, opts = {}) {
+  const key = weatherCacheKey(lat, lng)
+  const force = opts.force === true
+  const cached = key ? cache.get(key) : null
+
+  if (!force && isFresh(cached)) {
+    return withCacheMeta(cached.data, 'fresh', cached.fetchedAt)
+  }
+
+  if (!force && key && inflight.has(key)) {
+    return inflight.get(key)
+  }
+
+  const requestPromise = fetchWeatherLive(lat, lng)
+    .then(data => {
+      if (key) cache.set(key, { data, fetchedAt: Date.now() })
+      return withCacheMeta(data, 'live', Date.now())
+    })
+    .catch(err => {
+      const status = err.response?.status
+      if (isStaleUsable(cached)) {
+        logger.warn(`weather: using stale cache for ${key || 'unknown'} after ${status || err.message}`)
+        return withCacheMeta(cached.data, 'stale', cached.fetchedAt)
+      }
+      throw err
+    })
+    .finally(() => {
+      if (key) inflight.delete(key)
+    })
+
+  if (key) inflight.set(key, requestPromise)
+  return requestPromise
+}
+
+async function fetchWeatherLive(lat, lng) {
   const url = 'https://api.open-meteo.com/v1/forecast'
   const res = await axios.get(url, {
     params: {
@@ -45,7 +115,7 @@ async function getWeather(lat, lng) {
       hourly: 'temperature_2m,weather_code,precipitation_probability',
       forecast_days: 1, timezone: 'auto',
     },
-    timeout: 8000,
+    timeout: REQUEST_TIMEOUT_MS,
   })
   const d = res.data
   const cur = d.current
@@ -131,4 +201,4 @@ function buildPlanningHint(cur, curCode, hourly) {
   return { mode, note, temp: Math.round(cur.temperature_2m), condition: curCode.label }
 }
 
-module.exports = { getWeather }
+module.exports = { getWeather, weatherCacheKey }
