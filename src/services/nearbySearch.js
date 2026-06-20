@@ -1,6 +1,8 @@
 // src/services/nearbySearch.js
-// Proximity-first "nearby" search. Implements the spec's scoring:
-// distance 45% · relevance 25% · rating 20% · open-now 10%.
+// Proximity/discovery-first nearby search.
+// SAPPO should not just return the same famous city-centre venues.
+// We score by: proximity + relevance + rating quality + discovery/independent potential + open status.
+// Review count is deliberately capped so huge chains/tourist favourites don't always win.
 
 const { query } = require('../db/pool')
 const logger = require('../utils/logger')
@@ -60,6 +62,66 @@ function openScore(open) {
   return 5                                    // unknown
 }
 
+
+const CHAIN_PATTERNS = [
+  'starbucks','costa','caffe nero','pret','mcdonald','kfc','burger king','subway','greggs',
+  'wetherspoon','spoons','slug and lettuce','revolution','all bar one','the ivy','turtle bay',
+  'nando','pizza express','zizzi','wagamama','five guys','miller and carter','brewdog',
+  'premier inn','travelodge','novotel','holiday inn','ibis','hilton','marriott','malmaison'
+]
+function isLikelyChain(name = '') {
+  const n = String(name || '').toLowerCase()
+  return CHAIN_PATTERNS.some(x => n.includes(x))
+}
+function discoveryScore(v, m) {
+  const rating = Number(v.rating || 0)
+  const count = Number(v.rating_count || 0)
+  let s = 0
+  // High quality with modest review volume = strong hidden-gem signal.
+  if (rating >= 4.7 && count >= 10 && count <= 600) s += 22
+  else if (rating >= 4.5 && count >= 10 && count <= 1000) s += 18
+  else if (rating >= 4.3 && count >= 10 && count <= 1500) s += 12
+  else if (rating >= 4.0 && count <= 250) s += 7
+
+  if (!isLikelyChain(v.name)) s += 8
+  else s -= 12
+
+  // Huge review counts are useful for trust but often mean the obvious places.
+  if (count > 5000) s -= 12
+  else if (count > 2500) s -= 8
+  else if (count > 1200) s -= 4
+
+  // Hyper-local beats defaulting to city centre.
+  if (m != null && m < 800) s += 10
+  else if (m != null && m < 1500) s += 6
+  else if (m != null && m > 3500) s -= 6
+
+  return Math.max(-15, Math.min(30, s))
+}
+function weightedJitter() {
+  // Small randomness prevents the same equal-score cards every time.
+  return Math.random() * 4
+}
+function diversify(scored, limit) {
+  const picked = []
+  const seenNames = new Set()
+  const pool = scored.slice(0, Math.min(scored.length, Math.max(limit * 4, 24)))
+  for (const item of pool) {
+    const base = String(item.v.name || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 18)
+    if (seenNames.has(base)) continue
+    seenNames.add(base)
+    picked.push(item)
+    if (picked.length >= limit) break
+  }
+  if (picked.length < limit) {
+    for (const item of scored) {
+      if (!picked.includes(item)) picked.push(item)
+      if (picked.length >= limit) break
+    }
+  }
+  return picked
+}
+
 function walkText(m) {
   if (m == null) return null
   const mins = Math.max(1, Math.round((m / 1000 / 5) * 60))   // ~5km/h
@@ -101,19 +163,26 @@ async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowO
   const scored = rowsForScoring.map(v => {
     const m = haversineM(lat, lng, v.lat, v.lng)
     const open = isOpenNow(v.opening_hours, when)
-    const score = proximityScore(m) + relevanceScore(v.category_slug, categories) + ratingScore(v.rating, v.rating_count) + openScore(open)
-    return { v, m, open, score }
+    const score =
+      (proximityScore(m) * 1.15) +
+      (relevanceScore(v.category_slug, categories) * 1.0) +
+      (ratingScore(v.rating, v.rating_count) * 0.85) +
+      (openScore(open) * 0.6) +
+      discoveryScore(v, m) +
+      weightedJitter()
+    return { v, m, open, score, discovery_score: discoveryScore(v, m), is_independent: !isLikelyChain(v.name) }
   })
   .filter(s => s.m != null && s.m <= radius)
   .filter(s => !openNowOnly || s.open !== false)        // exclude closed if requested
   .sort((a, b) => b.score - a.score)
-  .slice(0, limit)
 
-  logger.info('[nearby] ' + JSON.stringify({ lat: +lat.toFixed(3), lng: +lng.toFixed(3), cats: categories, intent, strict, found: rows.length, afterFilter: rowsForScoring.length, returned: scored.length }))
+  const selected = diversify(scored, limit)
+
+  logger.info('[nearby] ' + JSON.stringify({ lat: +lat.toFixed(3), lng: +lng.toFixed(3), cats: categories, intent, strict, found: rows.length, afterFilter: rowsForScoring.length, returned: selected.length }))
 
   return {
     debug: debug && rule ? { intent, rule: rule.label, candidatesFound: rows.length, afterHardFilter: rowsForScoring.length, rejected: filteredRows.rejected || [] } : undefined,
-    results: scored.map(s => ({
+    results: selected.map(s => ({
       id: s.v.id,
       title: s.v.name,
       category: s.v.category_slug,
@@ -130,6 +199,8 @@ async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowO
       source: 'Sappo',
       google_maps_url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${s.v.name}, ${s.v.address || ''}`)}`,
       score: Math.round(s.score),
+      discovery_score: Math.round(s.discovery_score || 0),
+      is_independent: !!s.is_independent,
     })),
   }
 }

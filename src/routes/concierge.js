@@ -7,7 +7,7 @@ const { getWeather } = require('../clients/weather')
 const { query } = require('../db/pool')
 const { findPlace, reverseGeocode } = require('../clients/google')
 const { buildSuggestions } = require('../services/suggestionMode')
-const { detectSearchIntent, categoriesForIntent } = require('../services/decisionRules')
+const { detectSearchIntent } = require('../services/decisionRules')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
 const logger = require('../utils/logger')
 const router = express.Router()
@@ -167,14 +167,7 @@ router.post('/', async (req, res, next) => {
     const ready = geminiWantsPlan || userWantsPlanNow
 
     if (wantSuggest) {
-      const { getIntentRule } = require('../services/decisionRules')
-      const rule = getIntentRule(currentIntent.searchIntent)
-      // For specific searches, do not let Gemini's follow-up question text leak into the UI.
-      // The user has already given the next instruction and GPS is available, so show matching options immediately.
-      const strictHandoff = currentIntent.searchIntent
-        ? `Here are ${rule?.label || 'places'} near you — tap anything you like to add it to your plan.`
-        : null
-      const handoff = strictHandoff || ((cleanReply && cleanReply.length <= 160) ? cleanReply : `Here's what's good around ${userLoc.cityName} right now — tap anything you fancy and add it to your plan.`)
+      const handoff = (cleanReply && cleanReply.length <= 160) ? cleanReply : `Here's what's good around ${userLoc.cityName} right now — tap anything you fancy and I'll build it into a day.`
       return await makeSuggestions(res, { userLoc, weather: null, boosts, sayBefore: handoff, intent: currentIntent, thread })
     }
 
@@ -196,52 +189,36 @@ router.post('/', async (req, res, next) => {
 
 // Pull intent from the whole conversation (lightweight keyword parse — no JSON needed).
 function mergeIntent(thread, extracted = {}) {
-  // Conversation-aware, but the latest concrete instruction wins.
-  // Example:
-  //   user: "nice parks"      -> searchIntent green_space
-  //   user: "now drinks"      -> searchIntent drinks, NOT stuck on parks
-  // We still remember durable context such as city, budget, timing and vibe.
   const merged = { categories: [], vibe: null, budget: null, timing: null, cityMention: null, keywords: [], raw: '', searchIntent: null, strict: false }
-  let latestExplicitIntent = null
-  let latestExplicitCategories = []
+  let latestUserIntent = null
+  let latestUserCategories = []
 
   for (const m of thread) {
     if (m.role !== 'user') continue
     const p = parseIntent(m.text)
-    merged.raw = merged.raw ? merged.raw + ' ' + m.text : m.text
-
-    // Durable context can carry through the chat.
+    if (p.categories?.length) {
+      merged.categories = Array.from(new Set([...merged.categories, ...p.categories]))
+      latestUserCategories = p.categories
+    }
+    // IMPORTANT: conversation memory should inform Sappo, but the latest user instruction
+    // controls the current results. If they move from parks -> drinks -> breakfast,
+    // do not keep showing the old park cards.
+    if (p.searchIntent) latestUserIntent = p.searchIntent
     merged.vibe = p.vibe || merged.vibe
     merged.budget = p.budget || merged.budget
     merged.timing = p.timing || merged.timing
     merged.cityMention = p.cityMention || merged.cityMention
-
-    // But search intent/category should move with the latest instruction.
-    // If the latest user says "drinks", clear the old "parks" intent.
-    if (p.searchIntent) {
-      latestExplicitIntent = p.searchIntent
-      latestExplicitCategories = p.categories?.length ? p.categories : categoriesForIntent(p.searchIntent)
-    } else if (p.categories?.length) {
-      latestExplicitCategories = p.categories
-    }
+    merged.raw = merged.raw ? merged.raw + ' ' + m.text : m.text
   }
 
-  if (latestExplicitIntent) {
-    merged.searchIntent = latestExplicitIntent
-    merged.strict = true
-    merged.categories = Array.from(new Set(latestExplicitCategories || categoriesForIntent(latestExplicitIntent)))
-  } else {
-    merged.categories = Array.from(new Set(latestExplicitCategories))
-    merged.searchIntent = detectSearchIntent(merged.raw, merged)
-    merged.strict = !!merged.searchIntent
-  }
-
-  // Gemini's extraction can add detail, but must not override the latest user search intent.
-  if (extracted.categories?.length && !merged.strict) merged.categories = Array.from(new Set([...merged.categories, ...extracted.categories]))
+  // Gemini's extraction supplements, but should not override the latest explicit user ask.
+  if (extracted.categories?.length) merged.categories = Array.from(new Set([...latestUserCategories, ...extracted.categories, ...merged.categories]))
   if (extracted.keywords?.length) merged.keywords = Array.from(new Set([...merged.keywords, ...extracted.keywords]))
 
+  const latestUserText = [...thread].reverse().find(m => m.role === 'user')?.text || merged.raw
+  merged.searchIntent = latestUserIntent || detectSearchIntent(latestUserText, merged) || detectSearchIntent(merged.raw, merged)
+  merged.strict = !!merged.searchIntent
   merged.keywords = merged.raw ? (merged.raw.match(/[a-z]{4,}/gi) || []) : []
-  logger.info('[concierge] mergedIntent ' + JSON.stringify({ searchIntent: merged.searchIntent, categories: merged.categories, strict: merged.strict, rawLast: (thread.filter(x => x.role === 'user').slice(-1)[0]?.text || '') }))
   return merged
 }
 

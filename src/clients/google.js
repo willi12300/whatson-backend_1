@@ -267,4 +267,62 @@ async function getPlaceDetails(placeId, timeoutMs = 8000) {
 }
 
 
-module.exports = { fetchVenues, findPlace, findPlaceDetails, reverseGeocode, getPlaceDetails }
+// Text search for intent-specific discovery queries such as "breakfast near me" or
+// "quiet parks with a lake". Nearby type search can over-favour the same famous
+// city-centre venues; text search gives Google more context and often surfaces
+// smaller local places.
+async function searchTextPlaces(textQuery, lat, lng, radius = 3000, opts = {}) {
+  if (!config.google.key || !textQuery) return []
+  const { includedType = null, timeoutMs = 8000, maxResultCount = 20 } = opts
+  try {
+    const body = {
+      textQuery,
+      maxResultCount: Math.min(Math.max(maxResultCount, 1), 20),
+    }
+    if (lat != null && lng != null) {
+      body.locationBias = { circle: { center: { latitude: lat, longitude: lng }, radius } }
+    }
+    if (includedType) body.includedType = includedType
+    const res = await axios.post(
+      'https://places.googleapis.com/v1/places:searchText',
+      body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': config.google.key,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,places.rating,places.userRatingCount,places.priceLevel,places.regularOpeningHours,places.currentOpeningHours,places.photos,places.internationalPhoneNumber,places.websiteUri,places.businessStatus,places.googleMapsUri',
+        },
+        timeout: timeoutMs,
+      }
+    )
+    return (res.data.places || []).map(p => ({
+      provider: 'google',
+      providerId: p.id,
+      name: p.displayName?.text || '',
+      address: p.formattedAddress || '',
+      lat: p.location?.latitude,
+      lng: p.location?.longitude,
+      types: p.types || [],
+      primaryType: p.primaryType || includedType || (p.types || [])[0] || null,
+      rating: p.rating ?? null,
+      ratingCount: p.userRatingCount ?? null,
+      priceLevel: p.priceLevel ?? null,
+      phone: p.internationalPhoneNumber || null,
+      website: p.websiteUri || null,
+      businessStatus: p.businessStatus || null,
+      googleMapsUrl: p.googleMapsUri || null,
+      openingHours: p.currentOpeningHours || p.regularOpeningHours || null,
+      photos: (p.photos || []).slice(0, 3).map(ph => ({
+        url: `https://places.googleapis.com/v1/${ph.name}/media?maxWidthPx=500&key=${config.google.key}`,
+        source: 'google',
+      })),
+      raw: p,
+    }))
+  } catch (e) {
+    logger.error('[google] searchTextPlaces failed:', e.response?.status || e.message)
+    return []
+  }
+}
+
+
+module.exports = { fetchVenues, findPlace, findPlaceDetails, reverseGeocode, getPlaceDetails, searchTextPlaces }
