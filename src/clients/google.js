@@ -23,7 +23,7 @@ async function searchType(lat, lng, radius, type, timeoutMs = 15000) {
       {
         headers: {
           'X-Goog-Api-Key': config.google.key,
-          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,places.rating,places.userRatingCount,places.priceLevel,places.regularOpeningHours,places.photos,places.internationalPhoneNumber,places.websiteUri,places.businessStatus',
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,places.rating,places.userRatingCount,places.priceLevel,places.regularOpeningHours,places.currentOpeningHours,places.photos,places.internationalPhoneNumber,places.websiteUri,places.businessStatus',
           'Content-Type': 'application/json',
         },
         timeout: timeoutMs,
@@ -44,7 +44,7 @@ async function searchType(lat, lng, radius, type, timeoutMs = 15000) {
       phone: p.internationalPhoneNumber || null,
       website: p.websiteUri || null,
       businessStatus: p.businessStatus || null,
-      openingHours: p.regularOpeningHours || null,
+      openingHours: p.currentOpeningHours || p.regularOpeningHours || null,
       photos: (p.photos || []).slice(0, 3).map(ph => ({
         url: `https://places.googleapis.com/v1/${ph.name}/media?maxWidthPx=400&key=${config.google.key}`,
         source: 'google',
@@ -146,7 +146,7 @@ async function findPlaceDetails(textQuery, timeoutMs = 8000) {
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': config.google.key,
-          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.types,places.primaryType,places.websiteUri,places.googleMapsUri,places.businessStatus',
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.types,places.primaryType,places.websiteUri,places.googleMapsUri,places.businessStatus,places.currentOpeningHours,places.regularOpeningHours',
         },
         timeout: timeoutMs,
       }
@@ -219,6 +219,7 @@ async function getPlaceDetails(placeId, timeoutMs = 8000) {
           'userRatingCount',
           'priceLevel',
           'regularOpeningHours',
+          'currentOpeningHours',
           'photos',
           'internationalPhoneNumber',
           'websiteUri',
@@ -244,7 +245,7 @@ async function getPlaceDetails(placeId, timeoutMs = 8000) {
       website: p.websiteUri || null,
       googleMapsUrl: p.googleMapsUri || null,
       businessStatus: p.businessStatus || null,
-      openingHours: p.regularOpeningHours || null,
+      openingHours: p.currentOpeningHours || p.regularOpeningHours || null,
       photos: (p.photos || []).slice(0, 6).map(ph => ({
         url: `https://places.googleapis.com/v1/${ph.name}/media?maxWidthPx=900&key=${config.google.key}`,
         source: 'google',

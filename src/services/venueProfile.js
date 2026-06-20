@@ -18,6 +18,36 @@ function asJson(value, fallback = null) {
   return value
 }
 
+
+
+function normalizeOpeningHours(raw) {
+  const oh = asJson(raw, null)
+  if (!oh || typeof oh !== 'object') return null
+  const openNow = typeof oh.openNow === 'boolean' ? oh.openNow : (typeof oh.open_now === 'boolean' ? oh.open_now : null)
+  const nextOpen = oh.nextOpenTime || oh.next_open_time || oh.next_open || null
+  const nextClose = oh.nextCloseTime || oh.next_close_time || oh.next_close || null
+  const weekday = oh.weekdayDescriptions || oh.weekday_text || oh.weekday_descriptions || []
+  return {
+    ...oh,
+    openNow,
+    open_now: openNow,
+    next_open: nextOpen,
+    next_close: nextClose,
+    weekday_text: weekday,
+    source: oh.source || 'google',
+    checked_at: new Date().toISOString(),
+  }
+}
+
+function isHoursFresh(v, maxMinutes = 15) {
+  const oh = asJson(v.opening_hours, null)
+  const checkedRaw = oh?.checked_at || v.google_last_checked || v.profile_last_enriched || null
+  if (!checkedRaw) return false
+  const checked = new Date(checkedRaw)
+  if (Number.isNaN(checked.getTime())) return false
+  return (Date.now() - checked.getTime()) < maxMinutes * 60 * 1000
+}
+
 function walkMinutes(meters) {
   if (meters == null) return null
   return Math.max(1, Math.round(Number(meters) / 80))
@@ -40,16 +70,31 @@ function buildGoogleMapsUrl(v) {
 }
 
 function isOpenNow(v) {
-  const oh = v.opening_hours || {}
-  if (typeof oh.openNow === 'boolean') return oh.openNow
+  const oh = asJson(v.opening_hours, {}) || {}
   if (typeof oh.open_now === 'boolean') return oh.open_now
-  return v.business_status === 'OPERATIONAL' || !v.business_status
+  if (typeof oh.openNow === 'boolean') return oh.openNow
+  // Google businessStatus means the place exists/operates generally. It does NOT mean open right now.
+  // Unknown hours should stay unknown rather than defaulting to open.
+  return null
+}
+
+function nextOpenText(v) {
+  const oh = asJson(v.opening_hours, {}) || {}
+  const next = oh.next_open || oh.nextOpenTime || oh.next_open_time || null
+  if (!next) return null
+  try {
+    return `Opens ${new Date(next).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`
+  } catch { return 'Opens soon' }
 }
 
 function closesText(v) {
-  const oh = v.opening_hours || {}
+  const oh = asJson(v.opening_hours, {}) || {}
   if (oh.closeText) return oh.closeText
   if (oh.today_close) return `Closes ${oh.today_close}`
+  const nextClose = oh.next_close || oh.nextCloseTime || oh.next_close_time || null
+  if (nextClose) {
+    try { return `Closes ${new Date(nextClose).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` } catch {}
+  }
   const weekday = oh.weekdayDescriptions || oh.weekday_descriptions || oh.weekday_text
   if (Array.isArray(weekday) && weekday.length) return 'Hours available'
   return null
@@ -151,8 +196,10 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
   const checked = venue.google_last_checked ? new Date(venue.google_last_checked) : (venue.profile_last_enriched ? new Date(venue.profile_last_enriched) : null)
   const googleReviews = asJson(venue.google_review_sample, [])
   const hasReviews = Array.isArray(googleReviews) && googleReviews.some(r => r?.text)
-  const isFresh = checked && (Date.now() - checked.getTime()) < 7 * 24 * 60 * 60 * 1000
-  if (!force && isFresh && venue.google_place_id && (hasReviews || venue.rating)) return venue
+  const profileFresh = checked && (Date.now() - checked.getTime()) < 7 * 24 * 60 * 60 * 1000
+  const hoursFresh = isHoursFresh(venue, 15)
+  // Reviews/ratings can be cached for days, but opening status must be refreshed regularly.
+  if (!force && profileFresh && hoursFresh && venue.google_place_id && (hasReviews || venue.rating)) return venue
 
   const debug = { queriesTried: [], method: null, placeId: null, status: 'started' }
   try {
@@ -216,7 +263,7 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
       details.rating,
       details.ratingCount,
       details.priceLevel,
-      details.openingHours ? JSON.stringify(details.openingHours) : null,
+      normalizeOpeningHours(details.openingHours) ? JSON.stringify(normalizeOpeningHours(details.openingHours)) : null,
       details.businessStatus,
       details.phone,
       details.website,
@@ -243,7 +290,7 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
       rating: details.rating ?? venue.rating,
       rating_count: details.ratingCount ?? venue.rating_count,
       price_level: details.priceLevel ?? venue.price_level,
-      opening_hours: details.openingHours || venue.opening_hours,
+      opening_hours: normalizeOpeningHours(details.openingHours) || venue.opening_hours,
       business_status: details.businessStatus || venue.business_status,
       phone: venue.phone || details.phone,
       website: venue.website || details.website,
@@ -365,13 +412,16 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
   const walk = walkMinutes(distanceM)
   const drive = driveMinutes(distanceM)
 
-  const busyEstimate = estimateBusy(venue, { when: new Date(), events: eventsQ.rows.map(e => ({ ...e, venue_id: Number(id) })) })
+  const openNow = isOpenNow(venue)
+  const rawBusyEstimate = estimateBusy(venue, { when: new Date(), events: eventsQ.rows.map(e => ({ ...e, venue_id: Number(id) })) })
+  const busyEstimate = openNow === false
+    ? { level: 'closed', reason: nextOpenText(venue) || 'Closed right now', confidence: 'google_hours' }
+    : rawBusyEstimate
   const busyLevel = busyEstimate.level
   const googleRating = toNum(venue.rating)
   const googleReviews = Number(venue.rating_count || 0)
   const tripRating = toNum(venue.tripadvisor_rating)
   const tripReviews = Number(venue.tripadvisor_review_count || 0)
-  const openNow = isOpenNow(venue)
   const sappoScore = deriveSappoScore({ googleRating, googleReviews, tripRating, tripReviews, distanceM, openNow, busyLevel })
   const whyChosen = buildWhy(venue, { googleRating, tripRating, distanceM, openNow, busyLevel })
   const vibeTags = buildVibeTags(venue, busyLevel)
@@ -414,6 +464,8 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     driving_time_text: drive ? `${drive} min drive` : null,
     open_now: openNow,
     closes_text: closesText(venue),
+    opens_text: nextOpenText(venue),
+    opening_hours_checked_at: asJson(venue.opening_hours, {})?.checked_at || venue.google_last_checked || null,
     google_rating: googleRating,
     google_reviews: googleReviews,
     google_review_count: googleReviews,
@@ -433,8 +485,10 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     popularity_label: googleReviews > 1000 || tripReviews > 500 ? 'Popular Today' : 'Great Match',
     busy: {
       ...busyEstimate,
-      levelText: busyLevel === 'very_busy' ? 'Very busy' : busyLevel === 'busy' ? 'Busy' : busyLevel === 'moderate' ? 'Moderate' : 'Quiet',
-      waitText: busyLevel === 'very_busy' ? 'Live wait time: ~25 min' : busyLevel === 'busy' ? 'Live wait time: ~20 min' : busyLevel === 'moderate' ? 'Live wait time: ~10 min' : 'Usually no wait',
+      isClosed: openNow === false,
+      levelText: openNow === false ? 'Closed' : busyLevel === 'very_busy' ? 'Very busy' : busyLevel === 'busy' ? 'Busy' : busyLevel === 'moderate' ? 'Moderate' : 'Quiet',
+      waitText: openNow === false ? (nextOpenText(venue) || 'Check opening times') : busyLevel === 'very_busy' ? 'Live wait time: ~25 min' : busyLevel === 'busy' ? 'Live wait time: ~20 min' : busyLevel === 'moderate' ? 'Live wait time: ~10 min' : 'Usually no wait',
+      reason: openNow === false ? (nextOpenText(venue) || 'Closed right now') : busyEstimate.reason,
     },
     busy_level: busyLevel,
     busy_reason: busyEstimate.reason,
