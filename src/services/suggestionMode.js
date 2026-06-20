@@ -104,6 +104,89 @@ function splitHidden(cards = []) {
   })
   return sortForDiscovery(hidden)
 }
+
+function randomSeed() {
+  // Rotates softly each request. We keep relevance, but avoid the exact same order every time.
+  return Math.random()
+}
+function jitter(score, amount = 4) {
+  return score + ((randomSeed() - 0.5) * amount)
+}
+function shuffleTop(items = [], topN = 10) {
+  const head = items.slice(0, topN).map(x => ({ x, r: Math.random() })).sort((a,b) => a.r-b.r).map(o => o.x)
+  return [...head, ...items.slice(topN)]
+}
+function qualityScore(card = {}) {
+  const rating = Number(card.rating || 0)
+  const count = Number(card.rating_count || card.ratingCount || 0)
+  const reviewConfidence = Math.min(Math.log10(Math.max(count, 1)) / 4, 1) // caps huge review count influence
+  return (rating * 12) + (reviewConfidence * 12)
+}
+function distanceScore(card = {}) {
+  const d = Number(card.distance_meters || 999999)
+  if (!Number.isFinite(d)) return 0
+  if (d <= 500) return 35
+  if (d <= 1000) return 28
+  if (d <= 2000) return 18
+  if (d <= 3500) return 10
+  return 2
+}
+function provenFavouriteScore(card = {}, intentName = '') {
+  const rating = Number(card.rating || 0)
+  const count = Number(card.rating_count || 0)
+  const name = norm(card.title || card.name)
+  let s = qualityScore(card) + distanceScore(card) * 0.35
+  // Known genuinely-good big parks/landmarks should still appear sometimes.
+  if (['green_space', 'walking', 'attractions'].includes(intentName)) {
+    if (['sefton park','calderstones park','princes park','otterspool promenade','stanley park'].some(k => name.includes(k))) s += 18
+  }
+  if (rating >= 4.4 && count >= 400) s += 12
+  if (count > 10000) s -= 4 // don't let massive review count dominate
+  return jitter(s, 8)
+}
+function localDiscoveryScore(card = {}) {
+  return jitter(discoveryScore(card) + qualityScore(card) * 0.7 + distanceScore(card) * 0.7, 10)
+}
+function closestScore(card = {}) {
+  return jitter(distanceScore(card) + qualityScore(card) * 0.35 + discoveryScore(card) * 0.25, 6)
+}
+function addUnique(out, used, items, n) {
+  for (const c of items) {
+    const key = c.id ? `id:${c.id}` : `${norm(c.title || c.name)}|${Number(c.lat || 0).toFixed(3)}|${Number(c.lng || 0).toFixed(3)}`
+    if (used.has(key)) continue
+    used.add(key); out.push(c)
+    if (out.length >= n) break
+  }
+}
+function mixedRecommendationSet(cards = [], intentName = '', limit = 12) {
+  const unique = dedupeCards(cards).filter(Boolean)
+  if (!unique.length) return []
+
+  const proven = shuffleTop([...unique].sort((a,b) => provenFavouriteScore(b, intentName) - provenFavouriteScore(a, intentName)), 8)
+  const discovery = shuffleTop([...unique].sort((a,b) => localDiscoveryScore(b) - localDiscoveryScore(a)), 12)
+  const close = shuffleTop([...unique].sort((a,b) => closestScore(b) - closestScore(a)), 8)
+  const wildcard = shuffleTop([...unique].sort((a,b) => sortForDiscovery([a,b])[0] === a ? -1 : 1), 20)
+
+  // Controlled variety. Not random rubbish: every bucket is already filtered and relevant.
+  const quotas = ['green_space','walking','attractions','museum','historical'].includes(intentName)
+    ? { proven: Math.ceil(limit * 0.35), discovery: Math.ceil(limit * 0.30), close: Math.ceil(limit * 0.25), wildcard: limit }
+    : { proven: Math.ceil(limit * 0.25), discovery: Math.ceil(limit * 0.40), close: Math.ceil(limit * 0.25), wildcard: limit }
+
+  const out = [], used = new Set()
+  addUnique(out, used, proven, Math.min(limit, quotas.proven))
+  addUnique(out, used, discovery, Math.min(limit, out.length + quotas.discovery))
+  addUnique(out, used, close, Math.min(limit, out.length + quotas.close))
+  addUnique(out, used, wildcard, limit)
+
+  // Final small shuffle of lower positions keeps the first few strong, but avoids identical rows.
+  if (out.length > 4) {
+    const first = out.slice(0, 3)
+    const rest = shuffleTop(out.slice(3), 9)
+    return [...first, ...rest].slice(0, limit)
+  }
+  return out.slice(0, limit)
+}
+
 function queryHints(intentName, raw = '') {
   const q = norm(raw)
   if (intentName === 'food') {
@@ -208,41 +291,29 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
     const allCards = dedupeCards([...liveCards, ...dbCards])
       .filter(c => !c.distance_meters || c.distance_meters <= (rule.radius || 5000))
 
-    const hidden = splitHidden(allCards).slice(0, 12)
-    const bestNearby = sortForDiscovery(allCards).slice(0, 12)
+    const mixed = mixedRecommendationSet(allCards, searchIntent, 12)
+    const hidden = splitHidden(allCards).filter(h => !mixed.slice(0, 6).some(m => norm(m.title) === norm(h.title))).slice(0, 8)
 
-    if (['food', 'drinks'].includes(searchIntent)) {
-      if (bestNearby.length) {
-        sections.push({
-          id: searchIntent,
-          title: rule.sectionTitle || (searchIntent === 'food' ? 'Food Near You' : 'Drinks Near You'),
-          icon: searchIntent === 'food' ? '🍳' : '🍸',
-          subtitle: searchIntent === 'food' ? 'Highly rated places close to you' : 'Bars and pubs close to you',
-          cards: bestNearby,
-          debug: out.debug,
-        })
-      }
-      if (hidden.length) {
-        sections.push({
-          id: `${searchIntent}_hidden`,
-          title: searchIntent === 'food' ? 'Independent Gems Nearby' : 'Hidden Drink Spots',
-          icon: '💎',
-          subtitle: 'High quality, less obvious, more local',
-          cards: hidden,
-        })
-      }
-    } else {
-      const cards = sortForDiscovery(allCards).slice(0, 12)
-      if (cards.length) {
-        sections.push({
-          id: searchIntent,
-          title: rule.sectionTitle || rule.label,
-          icon: searchIntent === 'green_space' || searchIntent === 'walking' ? '🌳' : (searchIntent === 'museum' ? '🏛️' : '📍'),
-          subtitle: rule.sectionSubtitle || `Relevant ${rule.label} close to you`,
-          cards,
-          debug: out.debug,
-        })
-      }
+    if (mixed.length) {
+      sections.push({
+        id: searchIntent,
+        title: rule.sectionTitle || (searchIntent === 'food' ? 'Food Near You' : searchIntent === 'drinks' ? 'Drinks Near You' : rule.label),
+        icon: searchIntent === 'food' ? '🍳' : (searchIntent === 'drinks' ? '🍸' : (searchIntent === 'green_space' || searchIntent === 'walking' ? '🌳' : (searchIntent === 'museum' ? '🏛️' : '📍'))),
+        subtitle: rule.sectionSubtitle || `Relevant ${rule.label} close to you`,
+        cards: mixed,
+        debug: out.debug,
+      })
+    }
+
+    // Food and drinks get an extra discovery carousel so independent spots do not get buried.
+    if (['food', 'drinks'].includes(searchIntent) && hidden.length) {
+      sections.push({
+        id: `${searchIntent}_hidden`,
+        title: searchIntent === 'food' ? 'Independent Gems Nearby' : 'Hidden Drink Spots',
+        icon: '💎',
+        subtitle: 'High quality, less obvious, more local',
+        cards: mixedRecommendationSet(hidden, searchIntent, 8),
+      })
     }
     logger.info('[suggest] strict discovery: ' + JSON.stringify({ intent: searchIntent, sections: sections.map(s => `${s.id}(${s.cards.length})`) }))
     return sections
@@ -258,7 +329,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
       sections.push({
         id: 'nearby', title: 'Great Nearby Places', icon: '📍',
         subtitle: 'Good food & drink close to you',
-        cards: sortForDiscovery(food.results.map(toCard)).slice(0, 8),
+        cards: mixedRecommendationSet(food.results.map(toCard), 'food', 8),
       })
     }
 
@@ -270,7 +341,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
       sections.push({
         id: 'attractions', title: 'Things to See', icon: '🎟️',
         subtitle: 'Attractions, museums & landmarks nearby',
-        cards: sortForDiscovery(attr.results.map(toCard)).slice(0, 8),
+        cards: mixedRecommendationSet(attr.results.map(toCard), 'attractions', 8),
       })
     }
 
