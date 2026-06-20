@@ -7,6 +7,7 @@ const { getWeather } = require('../clients/weather')
 const { query } = require('../db/pool')
 const { findPlace, reverseGeocode } = require('../clients/google')
 const { buildSuggestions } = require('../services/suggestionMode')
+const { detectSearchIntent } = require('../services/decisionRules')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
 const logger = require('../utils/logger')
 const router = express.Router()
@@ -160,12 +161,14 @@ router.post('/', async (req, res, next) => {
     const looksOpenEnded = /\b(what('?s| is| can)|things to do|what should|recommend|ideas|suggestions?|whats on|what'?s on|explore|show me)\b/i.test(message)
       && !/\bplan\b/i.test(message)
 
-    const wantSuggest = geminiWantsSuggest || (looksOpenEnded && hasGPS && !geminiWantsPlan)
+    const currentIntent = mergeIntent(thread, {})
+    const userWantsSpecificNearby = !!currentIntent.searchIntent && hasGPS && !/\bplan\b/i.test(message)
+    const wantSuggest = geminiWantsSuggest || userWantsSpecificNearby || (looksOpenEnded && hasGPS && !geminiWantsPlan)
     const ready = geminiWantsPlan || userWantsPlanNow
 
     if (wantSuggest) {
       const handoff = (cleanReply && cleanReply.length <= 160) ? cleanReply : `Here's what's good around ${userLoc.cityName} right now — tap anything you fancy and I'll build it into a day.`
-      return await makeSuggestions(res, { userLoc, weather: null, boosts, sayBefore: handoff })
+      return await makeSuggestions(res, { userLoc, weather: null, boosts, sayBefore: handoff, intent: currentIntent, thread })
     }
 
     if (!ready) {
@@ -186,11 +189,12 @@ router.post('/', async (req, res, next) => {
 
 // Pull intent from the whole conversation (lightweight keyword parse — no JSON needed).
 function mergeIntent(thread, extracted = {}) {
-  const merged = { categories: [], vibe: null, budget: null, timing: null, cityMention: null, keywords: [], raw: '' }
+  const merged = { categories: [], vibe: null, budget: null, timing: null, cityMention: null, keywords: [], raw: '', searchIntent: null, strict: false }
   for (const m of thread) {
     if (m.role !== 'user') continue
     const p = parseIntent(m.text)
     if (p.categories?.length) merged.categories = Array.from(new Set([...merged.categories, ...p.categories]))
+    merged.searchIntent = merged.searchIntent || p.searchIntent
     merged.vibe = merged.vibe || p.vibe
     merged.budget = merged.budget || p.budget
     merged.timing = merged.timing || p.timing
@@ -200,12 +204,14 @@ function mergeIntent(thread, extracted = {}) {
   // Gemini's extraction wins where present
   if (extracted.categories?.length) merged.categories = Array.from(new Set([...merged.categories, ...extracted.categories]))
   if (extracted.keywords?.length) merged.keywords = Array.from(new Set([...merged.keywords, ...extracted.keywords]))
+  merged.searchIntent = merged.searchIntent || detectSearchIntent(merged.raw, merged)
+  merged.strict = !!merged.searchIntent
   merged.keywords = merged.raw ? (merged.raw.match(/[a-z]{4,}/gi) || []) : []
   return merged
 }
 
 // SUGGESTION MODE: return a curated spread of options (not one fixed plan).
-async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore }) {
+async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore, intent = null, thread = [] }) {
   try {
     let wx = weather
     if (!wx) { try { wx = await getWeather(userLoc.lat, userLoc.lng) } catch {} }
@@ -223,9 +229,11 @@ async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore }) {
       events = rows.map(r => ({ ...r, source: 'Event' }))
     } catch (e) { logger.error('[suggest] events fetch failed:', e.message) }
 
+    const mergedIntent = intent || mergeIntent(thread, {})
     const sections = await buildSuggestions({
       lat: userLoc.lat, lng: userLoc.lng, cityName: userLoc.cityName,
-      weather: wx, events, boosts,
+      weather: wx, events, boosts, intent: mergedIntent, queryText: mergedIntent.raw,
+      debug: String(process.env.SAPPO_DEBUG_DECISIONS || '').toLowerCase() === 'true',
     })
 
     if (!sections.length) {

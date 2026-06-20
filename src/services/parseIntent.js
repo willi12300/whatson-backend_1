@@ -4,6 +4,7 @@
 // (Gemini is used later for the actual plan; this is the cheap first pass.)
 
 const { CITIES } = require('../config')
+const { detectSearchIntent } = require('./decisionRules')
 
 // category keyword → venue category_slug
 const CATEGORY_KEYWORDS = {
@@ -41,7 +42,7 @@ function parseIntent(message = '') {
   const text = message.toLowerCase()
   const intent = {
     categories: [], vibe: null, budget: null, busyPref: null,
-    timing: null, group: null, cityMention: null, raw: message,
+    timing: null, group: null, cityMention: null, raw: message, searchIntent: null, strict: false,
   }
 
   // categories (collect all that match)
@@ -50,6 +51,9 @@ function parseIntent(message = '') {
   }
   // special: karaoke is its own strong signal even though it maps to music_venue
   if (/karaoke/.test(text) && !intent.categories.includes('music_venue')) intent.categories.push('music_venue')
+
+  intent.searchIntent = detectSearchIntent(message, intent)
+  intent.strict = !!intent.searchIntent
 
   // vibe
   for (const [vibe, words] of Object.entries(VIBE_KEYWORDS)) {

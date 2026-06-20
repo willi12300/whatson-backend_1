@@ -4,6 +4,7 @@
 
 const { query } = require('../db/pool')
 const logger = require('../utils/logger')
+const { getIntentRule, filterByDecisionRule } = require('./decisionRules')
 
 function haversineM(aLat, aLng, bLat, bLng) {
   if ([aLat, aLng, bLat, bLng].some(x => x == null)) return null
@@ -67,7 +68,7 @@ function walkText(m) {
 
 // Main: return nearby venues scored proximity-first.
 // opts: { lat, lng, categories?, radius?, openNowOnly?, limit?, city? }
-async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowOnly = false, limit = 12, city = null, excludeLodging = false }) {
+async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowOnly = false, limit = 12, city = null, excludeLodging = false, intent = null, strict = false, debug = false }) {
   if (lat == null || lng == null) return { error: 'no_location' }
 
   // bounding box prefilter for speed
@@ -92,8 +93,12 @@ async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowO
     params
   )
 
+  const rule = getIntentRule(intent)
+  const filteredRows = rule ? filterByDecisionRule(rows, rule, { debug }) : rows
+  const rowsForScoring = debug && filteredRows.kept ? filteredRows.kept : filteredRows
+
   const when = new Date()
-  const scored = rows.map(v => {
+  const scored = rowsForScoring.map(v => {
     const m = haversineM(lat, lng, v.lat, v.lng)
     const open = isOpenNow(v.opening_hours, when)
     const score = proximityScore(m) + relevanceScore(v.category_slug, categories) + ratingScore(v.rating, v.rating_count) + openScore(open)
@@ -104,9 +109,10 @@ async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowO
   .sort((a, b) => b.score - a.score)
   .slice(0, limit)
 
-  logger.info('[nearby] ' + JSON.stringify({ lat: +lat.toFixed(3), lng: +lng.toFixed(3), cats: categories, found: rows.length, returned: scored.length }))
+  logger.info('[nearby] ' + JSON.stringify({ lat: +lat.toFixed(3), lng: +lng.toFixed(3), cats: categories, intent, strict, found: rows.length, afterFilter: rowsForScoring.length, returned: scored.length }))
 
   return {
+    debug: debug && rule ? { intent, rule: rule.label, candidatesFound: rows.length, afterHardFilter: rowsForScoring.length, rejected: filteredRows.rejected || [] } : undefined,
     results: scored.map(s => ({
       id: s.v.id,
       title: s.v.name,
