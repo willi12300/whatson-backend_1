@@ -9,6 +9,7 @@ const { CITIES } = require('../config')
 const { reverseGeocode } = require('../clients/google')
 const { gatherCandidates, getRecentSpins, recordSpin, storeIntelligence, saveDiscoveredVenue } = require('../services/rouletteEngine')
 const logger = require('../utils/logger')
+const { getUserSignals, getVenueSignalMap, venueLearningScore, recordInteraction } = require('../services/behaviorLearning')
 const router = express.Router()
 
 // Internal broad categories used by the decision engine.
@@ -281,6 +282,9 @@ router.post('/', async (req, res, next) => {
     const googleTypes = GOOGLE_TYPES_BY_MODE[mode] || GOOGLE_TYPES_BY_MODE.anything
     const { venues, events, audit } = await gatherCandidates({ lat, lng, cityName, cats, radiusMiles, googleTypes })
 
+    const venueSignalMap = await getVenueSignalMap(venues.map(v => v.id).filter(Boolean))
+    const userSignals = await getUserSignals({ userId: req.userId || null, deviceId: deviceId || null })
+
     const recent = await getRecentSpins({ deviceId, userId: req.userId })
     const keyOf = (item) => item.kind === 'event'
       ? `e:${item.e.id || item.e.name}`
@@ -328,6 +332,11 @@ router.post('/', async (req, res, next) => {
       }
 
       if (!reject && v.rating) { score += Math.min(v.rating * 4, 20); if (v.rating >= 4.4) reasons.push('highly rated') }
+      if (!reject && v.id) {
+        const learning = venueLearningScore({ ...v, type: 'venue' }, venueSignalMap.get(Number(v.id)), userSignals)
+        score += learning
+        if (learning >= 8) reasons.push('popular with Sappo users')
+      }
       if (!reject) score += Math.min((v.rating_count || 0) / 350, 8)
 
       if (!reject) {
@@ -463,6 +472,7 @@ router.post('/', async (req, res, next) => {
       const e = pick.e
       const walkMin = pick.km != null ? Math.max(1, Math.round((pick.km / 5) * 60)) : null
       const whyBits = [...new Set(pick.reasons)]
+      recordInteraction({ userId: req.userId || null, deviceId, action: 'shown', itemType: 'event', eventId: /^\d+$/.test(String(e.id || '')) ? e.id : null, itemId: e.id || e.name, itemName: e.name, category: e.category, city: cityName, source: e.provider || 'Event', context: 'roulette' }).catch(() => {})
       return res.json({
         title: e.name,
         type: 'Live event' + (e.venue_name ? ` · ${e.venue_name}` : ''),
@@ -489,6 +499,7 @@ router.post('/', async (req, res, next) => {
     const walkMin = pick.km != null ? Math.max(1, Math.round((pick.km / 5) * 60)) : null
     const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${v.name}, ${v.address || cityName}`)}`
     const whyBits = [...new Set(pick.reasons)]
+    recordInteraction({ userId: req.userId || null, deviceId, action: 'shown', itemType: 'venue', venueId: liveVenueId, itemId: liveVenueId || v.provider_id || v.google_place_id || v.name, itemName: v.name, category: v.category_slug, city: cityName, source: v._src === 'google' ? 'Google Places' : 'Sappo', context: 'roulette' }).catch(() => {})
     return res.json({
       title: v.name,
       type: prettyType(v.category_slug),

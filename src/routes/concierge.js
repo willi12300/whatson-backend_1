@@ -168,7 +168,7 @@ router.post('/', async (req, res, next) => {
 
     if (wantSuggest) {
       const handoff = (cleanReply && cleanReply.length <= 160) ? cleanReply : `Here's what's good around ${userLoc.cityName} right now — tap anything you fancy and I'll build it into a day.`
-      return await makeSuggestions(res, { userLoc, weather: null, boosts, sayBefore: handoff, intent: currentIntent, thread })
+      return await makeSuggestions(res, { userLoc, weather: null, boosts, sayBefore: handoff, intent: currentIntent, thread, userId: req.userId || null, deviceId })
     }
 
     if (!ready) {
@@ -223,7 +223,7 @@ function mergeIntent(thread, extracted = {}) {
 }
 
 // SUGGESTION MODE: return a curated spread of options (not one fixed plan).
-async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore, intent = null, thread = [] }) {
+async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore, intent = null, thread = [], userId = null, deviceId = null }) {
   try {
     let wx = weather
     if (!wx) { try { wx = await getWeather(userLoc.lat, userLoc.lng) } catch {} }
@@ -246,6 +246,7 @@ async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore, inten
       lat: userLoc.lat, lng: userLoc.lng, cityName: userLoc.cityName,
       weather: wx, events, boosts, intent: mergedIntent, queryText: mergedIntent.raw,
       debug: String(process.env.SAPPO_DEBUG_DECISIONS || '').toLowerCase() === 'true',
+      userId, deviceId,
     })
 
     if (!sections.length) {

@@ -8,6 +8,7 @@ const { nearbySearch, ATTRACTION_CATS } = require('./nearbySearch')
 const { detectSearchIntent, getIntentRule, filterByDecisionRule } = require('./decisionRules')
 const logger = require('../utils/logger')
 const google = require('../clients/google')
+const { getUserSignals, getVenueSignalMap, venueLearningScore, recordShownBatch } = require('./behaviorLearning')
 
 function haversineM(aLat, aLng, bLat, bLng) {
   if ([aLat, aLng, bLat, bLng].some(x => x == null)) return null
@@ -135,7 +136,7 @@ function provenFavouriteScore(card = {}, intentName = '') {
   const rating = Number(card.rating || 0)
   const count = Number(card.rating_count || 0)
   const name = norm(card.title || card.name)
-  let s = qualityScore(card) + distanceScore(card) * 0.35
+  let s = qualityScore(card) + distanceScore(card) * 0.35 + Number(card._learningBoost || 0)
   // Known genuinely-good big parks/landmarks should still appear sometimes.
   if (['green_space', 'walking', 'attractions'].includes(intentName)) {
     if (['sefton park','calderstones park','princes park','otterspool promenade','stanley park'].some(k => name.includes(k))) s += 18
@@ -145,10 +146,10 @@ function provenFavouriteScore(card = {}, intentName = '') {
   return jitter(s, 8)
 }
 function localDiscoveryScore(card = {}) {
-  return jitter(discoveryScore(card) + qualityScore(card) * 0.7 + distanceScore(card) * 0.7, 10)
+  return jitter(discoveryScore(card) + qualityScore(card) * 0.7 + distanceScore(card) * 0.7 + Number(card._learningBoost || 0), 10)
 }
 function closestScore(card = {}) {
-  return jitter(distanceScore(card) + qualityScore(card) * 0.35 + discoveryScore(card) * 0.25, 6)
+  return jitter(distanceScore(card) + qualityScore(card) * 0.35 + discoveryScore(card) * 0.25 + Number(card._learningBoost || 0), 6)
 }
 function addUnique(out, used, items, n) {
   for (const c of items) {
@@ -207,6 +208,25 @@ function queryHints(intentName, raw = '') {
   if (intentName === 'attractions') return ['things to do near me', 'attractions near me', 'places to visit nearby']
   return []
 }
+
+async function attachLearning(cards = [], { userId = null, deviceId = null } = {}) {
+  if (!cards.length) return cards
+  const ids = cards.map(c => c.venueId || c.venue_id || (c.type === 'venue' ? c.id : null)).filter(Boolean)
+  const [signalMap, userSignals] = await Promise.all([
+    getVenueSignalMap(ids),
+    getUserSignals({ userId, deviceId }),
+  ])
+  return cards.map(c => {
+    const vid = Number(c.venueId || c.venue_id || (c.type === 'venue' ? c.id : null))
+    const boost = venueLearningScore(c, signalMap.get(vid), userSignals)
+    return { ...c, _learningBoost: boost }
+  })
+}
+
+function flattenSectionCards(sections = []) {
+  return sections.flatMap(s => (s.cards || []).map(c => ({ ...c, _section: s.id })))
+}
+
 async function liveGoogleDiscovery({ lat, lng, cityName, rule, searchIntent, queryText, max = 24 }) {
   const out = []
   const seen = new Set()
@@ -261,7 +281,7 @@ async function liveGoogleDiscovery({ lat, lng, cityName, rule, searchIntent, que
 }
 
 // Build the multi-section suggestion response.
-async function buildSuggestions({ lat, lng, cityName, weather, events = [], boosts = null, intent = null, queryText = '', debug = false }) {
+async function buildSuggestions({ lat, lng, cityName, weather, events = [], boosts = null, intent = null, queryText = '', debug = false, userId = null, deviceId = null }) {
   const haveGPS = lat != null && lng != null
   const sections = []
   const searchIntent = intent?.searchIntent || detectSearchIntent(queryText || intent?.raw || '', intent || {})
@@ -288,8 +308,9 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
     try { liveCards = await liveGoogleDiscovery({ lat, lng, cityName, rule, searchIntent, queryText: queryText || intent?.raw || '' }) }
     catch (e) { logger.error('[suggest] google discovery failed:', e.message) }
 
-    const allCards = dedupeCards([...liveCards, ...dbCards])
+    let allCards = dedupeCards([...liveCards, ...dbCards])
       .filter(c => !c.distance_meters || c.distance_meters <= (rule.radius || 5000))
+    allCards = await attachLearning(allCards, { userId, deviceId })
 
     const mixed = mixedRecommendationSet(allCards, searchIntent, 12)
     const hidden = splitHidden(allCards).filter(h => !mixed.slice(0, 6).some(m => norm(m.title) === norm(h.title))).slice(0, 8)
@@ -316,6 +337,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
       })
     }
     logger.info('[suggest] strict discovery: ' + JSON.stringify({ intent: searchIntent, sections: sections.map(s => `${s.id}(${s.cards.length})`) }))
+    recordShownBatch({ userId, deviceId, context: 'ai', city: cityName, items: flattenSectionCards(sections) }).catch(() => {})
     return sections
   }
 
@@ -329,7 +351,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
       sections.push({
         id: 'nearby', title: 'Great Nearby Places', icon: '📍',
         subtitle: 'Good food & drink close to you',
-        cards: mixedRecommendationSet(food.results.map(toCard), 'food', 8),
+        cards: mixedRecommendationSet(await attachLearning(food.results.map(toCard), { userId, deviceId }), 'food', 8),
       })
     }
 
@@ -341,7 +363,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
       sections.push({
         id: 'attractions', title: 'Things to See', icon: '🎟️',
         subtitle: 'Attractions, museums & landmarks nearby',
-        cards: mixedRecommendationSet(attr.results.map(toCard), 'attractions', 8),
+        cards: mixedRecommendationSet(await attachLearning(attr.results.map(toCard), { userId, deviceId }), 'attractions', 8),
       })
     }
 
@@ -349,7 +371,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
       lat, lng, categories: ['restaurant', 'cafe', 'bar', 'gallery', 'attraction', 'park'],
       radius: 3500, limit: 30, city: cityName, excludeLodging: true,
     })
-    const hidden = splitHidden((gems.results || []).map(toCard)).slice(0, 8)
+    const hidden = splitHidden(await attachLearning((gems.results || []).map(toCard), { userId, deviceId })).slice(0, 8)
     if (hidden.length) {
       sections.push({
         id: 'hidden', title: 'Hidden Gems', icon: '💎',
@@ -368,6 +390,7 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
   }
 
   logger.info('[suggest] sections: ' + sections.map(s => `${s.id}(${s.cards.length})`).join(', '))
+  recordShownBatch({ userId, deviceId, context: 'ai', city: cityName, items: flattenSectionCards(sections) }).catch(() => {})
   return sections
 }
 

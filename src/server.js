@@ -44,6 +44,7 @@ app.use('/weather', require('./routes/weather'))
 app.use('/offers', require('./routes/offers'))
 app.use('/missions', require('./routes/missions'))
 app.use('/checkins', require('./routes/checkins'))
+app.use('/interactions', require('./routes/interactions'))
 app.use('/profile', require('./routes/profile'))
 app.use('/profile', require('./routes/travelProfile'))
 
