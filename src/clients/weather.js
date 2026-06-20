@@ -1,45 +1,18 @@
 // src/clients/weather.js
-// Open-Meteo weather client — no API key needed.
-// Returns current conditions + next 12 hours, with caching/throttling so the app
-// does not hammer the weather API on every homepage render/tab change.
+// Open-Meteo weather client with in-memory cache + rate-limit cooldown.
+// Prevents homepage/plan/roulette from hammering weather API and causing 429 spam.
 
 const axios = require('axios')
 const logger = require('../utils/logger')
 
-const CACHE_TTL_MS = Number(process.env.WEATHER_CACHE_TTL_MS || 20 * 60 * 1000) // fresh for 20 mins
-const STALE_TTL_MS = Number(process.env.WEATHER_STALE_TTL_MS || 6 * 60 * 60 * 1000) // fallback for 6 hours
-const REQUEST_TIMEOUT_MS = Number(process.env.WEATHER_TIMEOUT_MS || 8000)
+const FRESH_MS = 20 * 60 * 1000       // 20 mins fresh cache
+const STALE_MS = 6 * 60 * 60 * 1000   // 6 hours stale fallback
+const COOLDOWN_MS = 15 * 60 * 1000    // after 429/timeout, avoid live calls for 15 mins
 
-// In-memory cache is enough for Railway single-service runtime and avoids 429s.
-// Key is rounded location, so tiny GPS movements don't create new API calls.
-const cache = new Map()
-const inflight = new Map()
-
-function weatherCacheKey(lat, lng) {
-  const safeLat = Number(lat)
-  const safeLng = Number(lng)
-  if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return null
-  return `${safeLat.toFixed(2)},${safeLng.toFixed(2)}`
-}
-
-function isFresh(entry) {
-  return entry && Date.now() - entry.fetchedAt < CACHE_TTL_MS
-}
-
-function isStaleUsable(entry) {
-  return entry && Date.now() - entry.fetchedAt < STALE_TTL_MS
-}
-
-function withCacheMeta(data, status, fetchedAt) {
-  return {
-    ...data,
-    cache: {
-      status, // fresh | stale | live
-      fetchedAt: new Date(fetchedAt || Date.now()).toISOString(),
-      ttlMinutes: Math.round(CACHE_TTL_MS / 60000),
-    },
-  }
-}
+const cache = new Map()       // key -> { data, fetchedAt }
+const inFlight = new Map()    // key -> Promise
+const cooldown = new Map()    // key -> timestamp until live calls are blocked
+let globalCooldownUntil = 0
 
 // WMO weather code → { label, icon, indoor } (indoor = leans toward indoor plans)
 const WMO = {
@@ -72,38 +45,99 @@ const WMO = {
 }
 const code = c => WMO[c] || { label: 'Unknown', icon: '🌡️', indoor: false }
 
+function weatherKey(lat, lng) {
+  // Round to ~1km-ish. Prevents one moving phone from creating endless cache keys.
+  const la = Number(lat).toFixed(2)
+  const lo = Number(lng).toFixed(2)
+  return `${la},${lo}`
+}
+
+function withMeta(data, meta) {
+  return {
+    ...data,
+    meta: {
+      ...(data.meta || {}),
+      ...meta,
+    },
+  }
+}
+
+function fallbackWeather(lat, lng, reason = 'fallback') {
+  // Safe soft fallback so UI works even when provider is rate limited before any cache exists.
+  const temp = 15
+  const condition = 'Weather updating'
+  const data = {
+    current: {
+      temp,
+      condition,
+      icon: '🌡️',
+      windSpeed: null,
+      precipitation: null,
+    },
+    hourly: [],
+    insight: 'Weather is updating — recommendations still use your location.',
+    planningHint: { mode: 'neutral', note: 'weather unavailable, so recommendations stay balanced', temp, condition },
+  }
+  return withMeta(data, {
+    source: 'fallback',
+    reason,
+    cached: false,
+    stale: false,
+    key: weatherKey(lat, lng),
+  })
+}
+
 async function getWeather(lat, lng, opts = {}) {
-  const key = weatherCacheKey(lat, lng)
-  const force = opts.force === true
-  const cached = key ? cache.get(key) : null
+  const key = weatherKey(lat, lng)
+  const now = Date.now()
+  const cached = cache.get(key)
 
-  if (!force && isFresh(cached)) {
-    return withCacheMeta(cached.data, 'fresh', cached.fetchedAt)
+  if (!opts.force && cached && now - cached.fetchedAt < FRESH_MS) {
+    return withMeta(cached.data, { source: 'cache', cached: true, stale: false, key })
   }
 
-  if (!force && key && inflight.has(key)) {
-    return inflight.get(key)
+  const blockedUntil = Math.max(cooldown.get(key) || 0, globalCooldownUntil || 0)
+  if (!opts.force && blockedUntil > now) {
+    if (cached && now - cached.fetchedAt < STALE_MS) {
+      return withMeta(cached.data, { source: 'cache', cached: true, stale: true, key, cooldownUntil: blockedUntil })
+    }
+    return fallbackWeather(lat, lng, 'weather_provider_cooldown')
   }
 
-  const requestPromise = fetchWeatherLive(lat, lng)
+  if (!opts.force && inFlight.has(key)) {
+    return inFlight.get(key)
+  }
+
+  const promise = fetchWeatherLive(lat, lng)
     .then(data => {
-      if (key) cache.set(key, { data, fetchedAt: Date.now() })
-      return withCacheMeta(data, 'live', Date.now())
+      cache.set(key, { data, fetchedAt: Date.now() })
+      return withMeta(data, { source: 'live', cached: false, stale: false, key })
     })
     .catch(err => {
-      const status = err.response?.status
-      if (isStaleUsable(cached)) {
-        logger.warn(`weather: using stale cache for ${key || 'unknown'} after ${status || err.message}`)
-        return withCacheMeta(cached.data, 'stale', cached.fetchedAt)
+      const status = err?.response?.status
+      const msg = err?.message || 'weather error'
+      // Avoid repeated live weather calls after provider rate-limit/timeout/network problems.
+      if (status === 429 || /timeout|ECONN|ENOTFOUND|rate/i.test(msg)) {
+        const until = Date.now() + COOLDOWN_MS
+        cooldown.set(key, until)
+        if (status === 429) globalCooldownUntil = Math.max(globalCooldownUntil, until)
+        logger.warn(`[weather] provider unavailable (${status || msg}); using cache/fallback for ${key}`)
+      } else {
+        logger.warn(`[weather] provider error (${status || msg}); using cache/fallback for ${key}`)
       }
-      throw err
+
+      const latest = cache.get(key)
+      if (latest && Date.now() - latest.fetchedAt < STALE_MS) {
+        return withMeta(latest.data, { source: 'cache', cached: true, stale: true, key, error: status || msg })
+      }
+      return fallbackWeather(lat, lng, status === 429 ? 'rate_limited' : msg)
     })
     .finally(() => {
-      if (key) inflight.delete(key)
+      inFlight.delete(key)
     })
 
-  if (key) inflight.set(key, requestPromise)
-  return requestPromise
+  inFlight.set(key, promise)
+  return promise
 }
 
 async function fetchWeatherLive(lat, lng) {
@@ -115,13 +149,12 @@ async function fetchWeatherLive(lat, lng) {
       hourly: 'temperature_2m,weather_code,precipitation_probability',
       forecast_days: 1, timezone: 'auto',
     },
-    timeout: REQUEST_TIMEOUT_MS,
+    timeout: 8000,
   })
   const d = res.data
   const cur = d.current
   const curCode = code(cur.weather_code)
 
-  // Build next 12 hours starting from the current hour
   const times = d.hourly.time
   const nowIso = cur.time
   let startIdx = times.findIndex(t => t >= nowIso)
@@ -152,12 +185,11 @@ async function fetchWeatherLive(lat, lng) {
       precipitation: cur.precipitation,
     },
     hourly,
-    insight,        // short human sentence for UI
-    planningHint,   // structured hint for the planner
+    insight,
+    planningHint,
   }
 }
 
-// Find the first upcoming hour with a high rain chance
 function firstRainHour(hourly) {
   return hourly.find(h => (h.rainChance != null && h.rainChance >= 50) || h.indoor && /rain|shower|drizzle|thunder/i.test(h.condition))
 }
@@ -175,10 +207,9 @@ function buildInsight(cur, curCode, hourly) {
   if (cur.temperature_2m <= 5) return 'Cold out — keep plans cosy and indoors.'
   if (cur.wind_speed_10m >= 35) return 'Windy out there — sheltered spots are better.'
   if (/clear/i.test(curCode.label) && cur.temperature_2m >= 16) return 'Lovely out — great for outdoor spots and walks.'
-  return null // nothing notable; UI just shows temp + condition
+  return null
 }
 
-// Structured hint the AI planner uses to bias venue choice
 function buildPlanningHint(cur, curCode, hourly) {
   const rain = firstRainHour(hourly)
   const rainingNow = /rain|shower|drizzle|thunder/i.test(curCode.label)
@@ -201,4 +232,4 @@ function buildPlanningHint(cur, curCode, hourly) {
   return { mode, note, temp: Math.round(cur.temperature_2m), condition: curCode.label }
 }
 
-module.exports = { getWeather, weatherCacheKey }
+module.exports = { getWeather }
