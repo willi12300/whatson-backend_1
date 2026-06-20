@@ -34,7 +34,7 @@ const INTENT_RULES = {
     sectionSubtitle: 'Green spaces, gardens and walks close by',
     allowedCategories: ['park', 'garden', 'nature_reserve', 'walking_trail', 'trail', 'viewpoint', 'landmark', 'attraction'],
     allowedTypes: ['park', 'tourist_attraction', 'point_of_interest', 'natural_feature'],
-    requiredAnyKeywords: ['park', 'garden', 'gardens', 'green', 'green space', 'green spaces', 'trail', 'walk', 'walking', 'woods', 'woodland', 'nature', 'reserve', 'viewpoint', 'promenade', 'beach', 'common', 'meadow'],
+    requiredAnyKeywords: ['park', 'garden', 'gardens', 'green', 'green space', 'green spaces', 'trail', 'walk', 'walking', 'woods', 'woodland', 'nature', 'reserve', 'viewpoint', 'promenade', 'beach', 'common', 'meadow', 'lake', 'lakes', 'pond', 'water', 'waterfront', 'reservoir'],
     blockedCategories: ['restaurant', 'cafe', 'bar', 'pub', 'nightclub', 'hotel', 'lodging', 'club', 'event', 'shopping'],
     blockedKeywords: ['coffee', 'cafe', 'bar', 'pub', 'restaurant', 'hotel', 'club', 'nightclub', 'bingo', 'casino', 'karaoke', 'grill', 'kitchen'],
     googleTypes: ['park', 'tourist_attraction'],
@@ -46,7 +46,7 @@ const INTENT_RULES = {
     sectionSubtitle: 'Trails, parks and scenic walking spots nearby',
     allowedCategories: ['park', 'garden', 'nature_reserve', 'walking_trail', 'trail', 'viewpoint', 'landmark', 'attraction'],
     allowedTypes: ['park', 'tourist_attraction', 'point_of_interest'],
-    requiredAnyKeywords: ['walk', 'walking', 'trail', 'route', 'path', 'promenade', 'park', 'garden', 'woods', 'nature', 'viewpoint', 'waterfront', 'dock', 'beach'],
+    requiredAnyKeywords: ['walk', 'walking', 'trail', 'route', 'path', 'promenade', 'park', 'garden', 'woods', 'nature', 'viewpoint', 'waterfront', 'dock', 'beach', 'lake', 'lakes', 'pond', 'water', 'reservoir'],
     blockedCategories: ['restaurant', 'cafe', 'bar', 'pub', 'nightclub', 'hotel', 'lodging', 'event'],
     blockedKeywords: ['coffee', 'cafe', 'bar', 'pub', 'restaurant', 'hotel', 'club', 'nightclub'],
     googleTypes: ['park', 'tourist_attraction'],
@@ -115,7 +115,7 @@ const INTENT_RULES = {
 
 const INTENT_KEYWORDS = [
   { intent: 'walking', words: ['walking trail', 'walking trails', 'walks near', 'walk near', 'good walk', 'scenic walk', 'trail near', 'trails near', 'places to walk'] },
-  { intent: 'green_space', words: ['park', 'parks', 'garden', 'gardens', 'green space', 'green spaces', 'nature reserve', 'woods', 'woodland'] },
+  { intent: 'green_space', words: ['park', 'parks', 'garden', 'gardens', 'green space', 'green spaces', 'nature reserve', 'woods', 'woodland', 'lake', 'lakes', 'pond', 'waterfront', 'greenery'] },
   { intent: 'museum', words: ['museum', 'museums', 'gallery', 'galleries', 'exhibition', 'exhibitions', 'art gallery'] },
   { intent: 'historical', words: ['historical', 'historic', 'history', 'heritage', 'monument', 'memorial', 'cathedral', 'church', 'landmark', 'sightseeing'] },
   { intent: 'drinks', words: ['bar', 'bars', 'pub', 'pubs', 'cocktail', 'cocktails', 'drinks', 'pint', 'beer', 'wine'] },
@@ -140,6 +140,13 @@ function detectSearchIntent(text = '', parsed = {}) {
 
 function getIntentRule(intent) {
   return intent ? INTENT_RULES[intent] || null : null
+}
+
+function categoriesForIntent(intent) {
+  const rule = getIntentRule(intent)
+  if (!rule) return []
+  // Only return categories that actually exist in our DB category_slug world.
+  return (rule.allowedCategories || []).filter(c => !['garden', 'nature_reserve', 'walking_trail', 'trail', 'historic_site'].includes(c)).map(normCat)
 }
 
 function itemText(item = {}) {
@@ -183,4 +190,4 @@ function filterByDecisionRule(items = [], rule = null, opts = {}) {
   return opts.debug ? { kept, rejected } : kept
 }
 
-module.exports = { INTENT_RULES, detectSearchIntent, getIntentRule, matchesDecisionRule, filterByDecisionRule, normCat }
+module.exports = { INTENT_RULES, detectSearchIntent, getIntentRule, categoriesForIntent, matchesDecisionRule, filterByDecisionRule, normCat }
