@@ -1,11 +1,12 @@
 const express = require('express')
 const { query } = require('../db/pool')
-const { distanceMeters } = require('../utils/helpers')
+const { distanceMeters, normaliseName } = require('../utils/helpers')
 const { nearbySearch } = require('../services/nearbySearch')
-const { fetchVenues } = require('../clients/google')
+const { fetchVenues, findPlaceDetails } = require('../clients/google')
 const logger = require('../utils/logger')
 const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch } = require('../services/venueProfile')
 const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
+const { upsertVenue } = require('../services/sync')
 const router = express.Router()
 
 // GET /venues/test-google — quick health check for the Places API (New).
@@ -34,6 +35,125 @@ router.get('/test-google', async (req, res) => {
     return res.json({ google: 'ERROR', stage: 'handler', error: e && e.message, keyPresent: !!process.env.GOOGLE_PLACES_API_KEY })
   }
 })
+
+
+function placeTypeToCategory(input) {
+  const t = String(input || '').toLowerCase()
+  if (['park', 'garden', 'campground'].includes(t)) return t === 'garden' ? 'garden' : 'park'
+  if (t.includes('museum')) return 'museum'
+  if (t.includes('art_gallery')) return 'gallery'
+  if (t.includes('historical') || t.includes('landmark') || t.includes('church')) return 'historic'
+  if (t.includes('movie_theater')) return 'cinema'
+  if (t.includes('performing_arts') || t.includes('theater')) return 'theatre'
+  if (t.includes('night_club')) return 'nightclub'
+  if (t.includes('bar')) return 'bar'
+  if (t.includes('pub')) return 'pub'
+  if (t.includes('cafe')) return 'cafe'
+  if (t.includes('bakery') || t.includes('breakfast')) return 'cafe'
+  if (t.includes('restaurant') || t.includes('meal')) return 'restaurant'
+  if (t.includes('tourist_attraction') || t.includes('point_of_interest')) return 'attraction'
+  return 'other'
+}
+
+function buildUpsertVenueFromPayload(payload = {}, details = null) {
+  const d = details || {}
+  const rawTypes = d.types || payload.types || []
+  const primaryType = d.primaryType || payload.primaryType || payload.type || payload.category || rawTypes[0] || null
+  const category = placeTypeToCategory(primaryType)
+  const googlePlaceId = d.googlePlaceId || d.providerId || payload.googlePlaceId || payload.google_place_id || payload.place_id || null
+  const name = d.name || payload.name || payload.title
+  const lat = d.lat ?? payload.lat
+  const lng = d.lng ?? payload.lng
+  return {
+    name,
+    normalisedName: normaliseName(name || ''),
+    category,
+    lat,
+    lng,
+    address: d.address || payload.address || payload.location || null,
+    postcode: payload.postcode || null,
+    phone: d.phone || payload.phone || null,
+    website: d.website || payload.website || null,
+    rating: d.rating ?? payload.rating ?? payload.googleRating ?? null,
+    ratingCount: d.ratingCount ?? payload.rating_count ?? payload.ratingCount ?? payload.googleReviewCount ?? null,
+    priceLevel: d.priceLevel ?? payload.price_level ?? payload.priceLevel ?? null,
+    openingHours: d.openingHours || payload.opening_hours || payload.openingHours || null,
+    businessStatus: d.businessStatus || payload.business_status || payload.businessStatus || null,
+    photos: d.photos || payload.photos || (payload.cover_photo ? [{ url: payload.cover_photo, source: 'sappo' }] : []),
+    coverPhoto: (d.photos && d.photos[0] && (d.photos[0].url || d.photos[0])) || payload.cover_photo || payload.photoUrl || payload.image || null,
+    googlePlaceId,
+    google_maps_url: d.googleMapsUrl || payload.google_maps_url || payload.googleMapsUrl || payload.mapUrl || null,
+    sources: googlePlaceId ? [{ provider: 'google', providerId: googlePlaceId, raw: d.raw || payload.raw || payload }] : [],
+  }
+}
+
+async function findExistingVenue(payload = {}) {
+  const googlePlaceId = payload.googlePlaceId || payload.google_place_id || payload.place_id || null
+  if (googlePlaceId) {
+    const bySource = await query(
+      `SELECT v.* FROM venue_sources vs JOIN venues v ON v.id=vs.venue_id WHERE vs.provider='google' AND vs.provider_id=$1 LIMIT 1`,
+      [googlePlaceId]
+    )
+    if (bySource.rows[0]) return bySource.rows[0]
+    const byPlace = await query(`SELECT * FROM venues WHERE google_place_id=$1 LIMIT 1`, [googlePlaceId])
+    if (byPlace.rows[0]) return byPlace.rows[0]
+  }
+  const name = payload.name || payload.title
+  if (!name) return null
+  const params = [normaliseName(name)]
+  let where = `normalised_name = $1`
+  if (payload.city) { params.push(payload.city); where += ` AND city = $${params.length}` }
+  const exact = await query(`SELECT * FROM venues WHERE ${where} ORDER BY rating_count DESC NULLS LAST LIMIT 1`, params)
+  if (exact.rows[0]) return exact.rows[0]
+
+  const fuzzyParams = [`%${name}%`]
+  let fuzzyWhere = `name ILIKE $1`
+  if (payload.city) { fuzzyParams.push(payload.city); fuzzyWhere += ` AND city = $${fuzzyParams.length}` }
+  const fuzzy = await query(`SELECT * FROM venues WHERE ${fuzzyWhere} ORDER BY rating_count DESC NULLS LAST LIMIT 1`, fuzzyParams)
+  if (fuzzy.rows[0]) return fuzzy.rows[0]
+  return null
+}
+
+// POST /venues/resolve-profile
+// Resolve/create an internal SAPPO venue profile from Roulette/AI/Google results.
+// This is the single safe entry point for cards that do not already have a SAPPO venue id.
+router.post('/resolve-profile', async (req, res, next) => {
+  try {
+    const payload = req.body || {}
+    const name = payload.name || payload.title
+    if (!name && !(payload.googlePlaceId || payload.google_place_id || payload.place_id)) {
+      return res.status(400).json({ error: 'name or googlePlaceId required' })
+    }
+
+    const existing = await findExistingVenue(payload)
+    if (existing?.id) {
+      scheduleVenueEnrichment(existing.id, 'resolve_existing')
+      return res.json({ status: 'resolved_existing', venueId: existing.id, venue: existing })
+    }
+
+    const placeId = payload.googlePlaceId || payload.google_place_id || payload.place_id || null
+    const queryText = placeId
+      ? null
+      : [name, payload.address, payload.city].filter(Boolean).join(', ')
+    const details = placeId
+      ? await require('../clients/google').getPlaceDetails(placeId).catch(() => null)
+      : await findPlaceDetails(queryText).catch(() => null)
+
+    const upsert = buildUpsertVenueFromPayload(payload, details)
+    if (!upsert.name || upsert.lat == null || upsert.lng == null) {
+      return res.status(422).json({ error: 'Could not create profile: missing name/coordinates', detailsFound: !!details })
+    }
+    const city = payload.city || upsert.city || 'Liverpool'
+    const result = await upsertVenue(upsert, city)
+    if (result?.id) {
+      scheduleVenueEnrichment(result.id, 'resolve_created')
+      const { rows } = await query(`SELECT * FROM venues WHERE id=$1`, [result.id])
+      return res.json({ status: result.isNew ? 'created' : 'resolved_upsert', venueId: result.id, venue: rows[0] || { id: result.id, name: upsert.name } })
+    }
+    return res.status(500).json({ error: 'Could not create profile' })
+  } catch (err) { next(err) }
+})
+
 
 
 // GET /venues/nearby?lat=&lng=&categories=restaurant,cafe&radius=&openNow=&limit=

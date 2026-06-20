@@ -17,11 +17,12 @@ function queueEnrichment(venueId, reason) {
 }
 
 async function upsertVenue(v, city) {
-  const googleSource = (v.sources || []).find(s => s.provider === 'google') || null
+  const sources = Array.isArray(v.sources) ? v.sources.filter(Boolean) : []
+  const googleSource = sources.find(s => s.provider === 'google') || null
   const googlePlaceId = googleSource?.providerId || v.googlePlaceId || null
   const googleMapsUrl = googlePlaceId ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(v.name || '')}&query_place_id=${encodeURIComponent(googlePlaceId)}` : null
   let venueId = null
-  for (const s of v.sources) {
+  for (const s of sources) {
     const { rows } = await query(`SELECT venue_id FROM venue_sources WHERE provider=$1 AND provider_id=$2`, [s.provider, s.providerId])
     if (rows.length) { venueId = rows[0].venue_id; break }
   }
@@ -34,7 +35,7 @@ async function upsertVenue(v, city) {
       [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,JSON.stringify(v.photos||[]),v.coverPhoto,city,googlePlaceId,googleMapsUrl])
     venueId = rows[0].id
   }
-  for (const s of v.sources) {
+  for (const s of sources) {
     await query(`INSERT INTO venue_sources (venue_id,provider,provider_id,raw) VALUES ($1,$2,$3,$4) ON CONFLICT (provider,provider_id) DO UPDATE SET venue_id=EXCLUDED.venue_id,raw=EXCLUDED.raw`,
       [venueId,s.provider,s.providerId,s.raw?JSON.stringify(s.raw):null])
   }
