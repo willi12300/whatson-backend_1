@@ -20,7 +20,11 @@ const CATEGORY_ALIASES = {
   night_club: 'nightclub',
   movie_theater: 'cinema',
   cinema: 'cinema',
+  event: 'event',
+  events: 'event',
+  concert: 'event',
 }
+
 
 function normCat(cat) {
   const c = NORMALISE(cat).replace(/[\s-]+/g, '_')
@@ -28,6 +32,18 @@ function normCat(cat) {
 }
 
 const INTENT_RULES = {
+  events: {
+    label: 'events',
+    sectionTitle: 'Events Near You',
+    sectionSubtitle: 'Live events, gigs, comedy, theatre and things happening soon',
+    allowedCategories: ['event', 'music_venue', 'comedy', 'theatre', 'nightlife'],
+    allowedTypes: ['event'],
+    requiredAnyKeywords: ['event', 'events', 'gig', 'gigs', 'concert', 'concerts', 'show', 'shows', 'comedy', 'theatre', 'festival', 'whats on', 'what is on', 'tonight'],
+    blockedCategories: ['park', 'restaurant', 'cafe', 'bar', 'pub', 'hotel', 'lodging'],
+    blockedKeywords: ['park', 'garden', 'coffee', 'cafe', 'hotel'],
+    googleTypes: [],
+    radius: 8000,
+  },
   green_space: {
     label: 'parks and green spaces',
     sectionTitle: 'Parks Near You',
@@ -114,8 +130,9 @@ const INTENT_RULES = {
 }
 
 const INTENT_KEYWORDS = [
+  { intent: 'events', words: ['event', 'events', 'whats on', "what's on", 'what is on', 'gig', 'gigs', 'concert', 'concerts', 'show', 'shows', 'comedy night', 'theatre', 'festival', 'live music tonight'] },
   { intent: 'walking', words: ['walking trail', 'walking trails', 'walks near', 'walk near', 'good walk', 'scenic walk', 'trail near', 'trails near', 'places to walk'] },
-  { intent: 'green_space', words: ['park', 'parks', 'garden', 'gardens', 'green space', 'green spaces', 'nature reserve', 'woods', 'woodland'] },
+  { intent: 'green_space', words: ['park', 'parks', 'garden', 'gardens', 'green space', 'green spaces', 'nature reserve', 'woods', 'woodland', 'lake', 'lakes', 'waterside', 'waterfront'] },
   { intent: 'museum', words: ['museum', 'museums', 'gallery', 'galleries', 'exhibition', 'exhibitions', 'art gallery'] },
   { intent: 'historical', words: ['historical', 'historic', 'history', 'heritage', 'monument', 'memorial', 'cathedral', 'church', 'landmark', 'sightseeing'] },
   { intent: 'drinks', words: ['bar', 'bars', 'pub', 'pubs', 'cocktail', 'cocktails', 'drinks', 'pint', 'beer', 'wine'] },
@@ -129,6 +146,7 @@ function detectSearchIntent(text = '', parsed = {}) {
     if (row.words.some(w => raw.includes(NORMALISE(w)))) return row.intent
   }
   const cats = (parsed.categories || []).map(normCat)
+  if (cats.includes('event')) return 'events'
   if (cats.includes('park')) return 'green_space'
   if (cats.includes('museum') || cats.includes('gallery')) return 'museum'
   if (cats.includes('landmark')) return 'historical'

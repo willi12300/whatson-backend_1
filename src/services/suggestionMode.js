@@ -198,6 +198,7 @@ function queryHints(intentName, raw = '') {
     return ['food near me', 'independent restaurant nearby', 'local places to eat']
   }
   if (intentName === 'drinks') return ['cocktail bars near me', 'pubs near me', 'independent bars nearby', 'best local pubs']
+  if (intentName === 'events') return []
   if (intentName === 'green_space') {
     if (q.includes('lake') || q.includes('water')) return ['parks with lake near me', 'green space lake nearby', 'waterside park near me']
     return ['parks near me', 'gardens near me', 'green spaces nearby', 'quiet park nearby']
@@ -288,6 +289,21 @@ async function buildSuggestions({ lat, lng, cityName, weather, events = [], boos
   const rule = getIntentRule(searchIntent)
 
   // STRICT QUERY MODE: if the user asks for a specific thing, only return that thing.
+  // Event intent must NEVER fall back to parks/food/nearby venue buckets.
+  if (searchIntent === 'events') {
+    const eventCards = (events || []).slice(0, 12).map(eventToCard)
+    if (eventCards.length) {
+      sections.push({
+        id: 'events', title: rule?.sectionTitle || 'Events Near You', icon: '🎟️',
+        subtitle: rule?.sectionSubtitle || 'Live events and things happening soon',
+        cards: eventCards,
+      })
+    }
+    logger.info('[suggest] strict events: ' + JSON.stringify({ sections: sections.map(s => `${s.id}(${s.cards.length})`) }))
+    recordShownBatch({ userId, deviceId, context: 'ai', city: cityName, items: flattenSectionCards(sections) }).catch(() => {})
+    return sections
+  }
+
   // For food/drinks we also add a second hidden-gem/independent section so the results
   // do not become the same famous venues every time.
   if (haveGPS && rule) {

@@ -167,7 +167,7 @@ router.post('/', async (req, res, next) => {
     const ready = geminiWantsPlan || userWantsPlanNow
 
     if (wantSuggest) {
-      const handoff = (cleanReply && cleanReply.length <= 160) ? cleanReply : `Here's what's good around ${userLoc.cityName} right now — tap anything you fancy and I'll build it into a day.`
+      const handoff = (cleanReply && cleanReply.length <= 160) ? cleanReply : `Here's what's good around ${userLoc.cityName} right now — tap + Add on anything you fancy and it will go onto your plan.`
       return await makeSuggestions(res, { userLoc, weather: null, boosts, sayBefore: handoff, intent: currentIntent, thread, userId: req.userId || null, deviceId })
     }
 
@@ -216,8 +216,15 @@ function mergeIntent(thread, extracted = {}) {
   if (extracted.keywords?.length) merged.keywords = Array.from(new Set([...merged.keywords, ...extracted.keywords]))
 
   const latestUserText = [...thread].reverse().find(m => m.role === 'user')?.text || merged.raw
-  merged.searchIntent = latestUserIntent || detectSearchIntent(latestUserText, merged) || detectSearchIntent(merged.raw, merged)
+  const latestDetected = detectSearchIntent(latestUserText, { ...merged, categories: latestUserCategories })
+
+  // Latest instruction wins. Do not fall back to the whole conversation for search
+  // intent, because that causes "parks" to get stuck and reused for later asks like
+  // "what events are on" or "why do you keep showing parks".
+  // The old conversation still informs tone/context, but not the current result type.
+  merged.searchIntent = latestUserIntent || latestDetected || null
   merged.strict = !!merged.searchIntent
+  merged.latestUserText = latestUserText
   merged.keywords = merged.raw ? (merged.raw.match(/[a-z]{4,}/gi) || []) : []
   return merged
 }
@@ -244,7 +251,7 @@ async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore, inten
     const mergedIntent = intent || mergeIntent(thread, {})
     const sections = await buildSuggestions({
       lat: userLoc.lat, lng: userLoc.lng, cityName: userLoc.cityName,
-      weather: wx, events, boosts, intent: mergedIntent, queryText: mergedIntent.raw,
+      weather: wx, events, boosts, intent: mergedIntent, queryText: mergedIntent.latestUserText || mergedIntent.raw,
       debug: String(process.env.SAPPO_DEBUG_DECISIONS || '').toLowerCase() === 'true',
       userId, deviceId,
     })
