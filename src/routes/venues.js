@@ -263,6 +263,30 @@ router.get('/list/trending', async (req, res, next) => {
 
 
 
+// GET /venues/enrich-tripadvisor?secret=...&city=Liverpool&limit=50
+// Browser-friendly: bulk-matches venues to TripAdvisor to add ratings + reviews.
+// Run AFTER Google enrichment. Repeat until "matched" reaches 0.
+router.get('/enrich-tripadvisor', async (req, res, next) => {
+  try {
+    if ((req.query.secret || '') !== process.env.SYNC_SECRET) {
+      return res.status(403).json({ error: 'Bad or missing secret' })
+    }
+    const out = await syncTripAdvisorBatch({
+      city: req.query.city || 'Liverpool',
+      limit: parseInt(req.query.limit || '50'),
+      force: false,
+    })
+    res.json({
+      tripadvisor: 'ENRICHMENT_RUN_COMPLETE',
+      scanned: out.scanned,
+      matched: out.matched,
+      failed: out.failed,
+      matchedNames: (out.results || []).filter(r => r.matched).map(r => r.name).slice(0, 20),
+      note: 'Run this URL again for the next batch. Repeat until "matched" reaches 0.',
+    })
+  } catch (err) { next(err) }
+})
+
 // POST /venues/admin/sync-tripadvisor?city=Liverpool&limit=25&force=true
 // Bulk sync TripAdvisor IDs/ratings/reviews into the venue database.
 router.post('/admin/sync-tripadvisor', async (req, res, next) => {
@@ -273,6 +297,30 @@ router.post('/admin/sync-tripadvisor', async (req, res, next) => {
       force: String(req.query.force || req.body?.force || '').toLowerCase() === 'true',
     })
     res.json({ tripadvisor: 'SYNC_COMPLETE', ...out })
+  } catch (err) { next(err) }
+})
+
+// GET /venues/enrich-google?secret=...&city=Liverpool&limit=50
+// Browser-friendly version: bulk-matches venues to Google to fill in images/ratings/hours.
+// Run it repeatedly until "failed" stops shrinking — each run does `limit` venues.
+router.get('/enrich-google', async (req, res, next) => {
+  try {
+    if ((req.query.secret || '') !== process.env.SYNC_SECRET) {
+      return res.status(403).json({ error: 'Bad or missing secret' })
+    }
+    const out = await syncGoogleBatch({
+      city: req.query.city || 'Liverpool',
+      limit: parseInt(req.query.limit || '50'),
+      force: false,   // only enrich venues that still need it
+    })
+    res.json({
+      google: 'ENRICHMENT_RUN_COMPLETE',
+      scanned: out.scanned,
+      matched: out.matched,
+      failed: out.failed,
+      matchedNames: out.results.filter(r => r.matched).map(r => r.name).slice(0, 20),
+      note: 'Run this URL again to process the next batch. Repeat until "matched" reaches 0 (nothing left to enrich).',
+    })
   } catch (err) { next(err) }
 })
 
