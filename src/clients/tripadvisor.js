@@ -249,16 +249,21 @@ async function searchTripAdvisorLocation({ name, lat, lng, address, categorySlug
   debugInfo.selected = best ? { location_id: best.location_id, name: best.name, score: best._score, address: best.address_obj?.address_string || best.address_string, distance: best.distance } : null
   debugInfo.rawResults = debugInfo.rawResults.slice(0, 12)
 
-  // Accept fuzzy matches. Same city/address/distance and name overlap is enough.
-  if (!best || best._score < 35) {
+  // Require a GENUINE name match — distance + city proximity alone must NOT be enough,
+  // or a nearby McDonald's wins the match for a pub. The names themselves must overlap.
+  const nameSim = best ? tokenSimilarity(normaliseText(name), normaliseText(best.name || '')) : 0
+  const MIN_SCORE = 55           // raised from 35 — weak matches were accepting wrong venues
+  const MIN_NAME_SIM = 0.45      // names must actually resemble each other
+
+  if (!best || best._score < MIN_SCORE || nameSim < MIN_NAME_SIM) {
     debugInfo.status = 'low_confidence'
-    logger.info(`[tripadvisor] low confidence for ${name}; best=${best?.name || 'none'} score=${best?._score || 0}`)
+    logger.info(`[tripadvisor] rejected weak match for ${name}; best=${best?.name || 'none'} score=${best?._score || 0} nameSim=${nameSim.toFixed(2)}`)
     return debug ? { _noMatch: true, _debug: debugInfo, _candidates: sorted.slice(0, 10).map(x => ({ location_id: x.location_id, name: x.name, score: x._score, address: x.address_obj?.address_string || x.address_string, distance: x.distance })) } : null
   }
 
   debugInfo.status = 'matched'
   best._debug = debugInfo
-  logger.info(`[tripadvisor] match ${name} -> ${best.name || best.location_id} (${best.location_id}) score=${best._score}`)
+  logger.info(`[tripadvisor] match ${name} -> ${best.name || best.location_id} (${best.location_id}) score=${best._score} nameSim=${nameSim.toFixed(2)}`)
   return best
 }
 

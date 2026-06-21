@@ -298,6 +298,32 @@ router.get('/list/trending', async (req, res, next) => {
 // GET /venues/enrich-tripadvisor?secret=...&city=Liverpool&limit=50
 // Browser-friendly: bulk-matches venues to TripAdvisor to add ratings + reviews.
 // Run AFTER Google enrichment. Repeat until "matched" reaches 0.
+// GET /venues/reset-tripadvisor?secret=...&city=Liverpool
+// Wipes existing TripAdvisor data so the (now stricter) matcher can re-run cleanly.
+// Use this ONCE to clear wrong matches (e.g. a pub showing McDonald's reviews),
+// then run /enrich-tripadvisor again to re-match properly.
+router.get('/reset-tripadvisor', async (req, res, next) => {
+  try {
+    if ((req.query.secret || '') !== process.env.SYNC_SECRET) {
+      return res.status(403).json({ error: 'Bad or missing secret' })
+    }
+    const city = req.query.city || 'Liverpool'
+    const r = await query(
+      `UPDATE venues SET tripadvisor_location_id = NULL, tripadvisor_rating = NULL,
+         tripadvisor_review_count = NULL, tripadvisor_ranking = NULL, tripadvisor_url = NULL,
+         tripadvisor_top_review = NULL, tripadvisor_status = NULL, tripadvisor_last_checked = NULL
+       WHERE city = $1`,
+      [city]
+    )
+    return res.json({
+      reset: 'TRIPADVISOR_CLEARED',
+      city,
+      venuesReset: r.rowCount,
+      note: 'Now run /venues/enrich-tripadvisor again — it will re-match with the stricter logic.',
+    })
+  } catch (err) { next(err) }
+})
+
 router.get('/enrich-tripadvisor', async (req, res, next) => {
   try {
     if ((req.query.secret || '') !== process.env.SYNC_SECRET) {
