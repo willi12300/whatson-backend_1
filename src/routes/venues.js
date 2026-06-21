@@ -11,6 +11,40 @@ const router = express.Router()
 
 // GET /venues/test-google — quick health check for the Places API (New).
 // Hit this in a browser after enabling Places API (New) to confirm it works.
+// GET /venues/debug/counts?city=Liverpool
+// Shows how many venues are actually in the DB per category — diagnoses a sparse DB.
+router.get('/debug/counts', async (req, res) => {
+  try {
+    const city = req.query.city || 'Liverpool'
+    const byCat = await query(
+      `SELECT category_slug, COUNT(*)::int AS n FROM venues WHERE city = $1 GROUP BY category_slug ORDER BY n DESC`,
+      [city]
+    )
+    const total = await query(`SELECT COUNT(*)::int AS n FROM venues WHERE city = $1`, [city])
+    const bySource = await query(
+      `SELECT vs.provider, COUNT(DISTINCT vs.venue_id)::int AS n
+       FROM venue_sources vs JOIN venues v ON v.id = vs.venue_id
+       WHERE v.city = $1 GROUP BY vs.provider ORDER BY n DESC`,
+      [city]
+    )
+    const lastSync = await query(
+      `SELECT status, venues_added, venues_updated, started_at, finished_at
+       FROM sync_log WHERE city = $1 ORDER BY id DESC LIMIT 1`,
+      [city]
+    )
+    return res.json({
+      city,
+      totalVenues: total.rows[0]?.n || 0,
+      byCategory: byCat.rows,
+      bySource: bySource.rows,
+      lastSync: lastSync.rows[0] || 'never run',
+      hint: 'Low numbers + Google as the only source = run a full sync. Google caps at 20/type; OSM & Foursquare add the bulk.',
+    })
+  } catch (e) {
+    return res.json({ error: e.message })
+  }
+})
+
 router.get('/test-google', async (req, res) => {
   logger.info('[test-google] hit')
   try {
