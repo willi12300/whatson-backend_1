@@ -3,9 +3,25 @@ const { config } = require('../config')
 const { sleep } = require('../utils/helpers')
 const logger = require('../utils/logger')
 
+// Google Places (New) returns priceLevel as a STRING enum, but our DB column is an
+// integer (1-4). Convert it. Returns null for unknown/free so we don't write bad data.
+function priceLevelToInt(pl) {
+  if (pl == null) return null
+  if (typeof pl === 'number') return pl                  // already an int (legacy)
+  const map = {
+    PRICE_LEVEL_FREE: 0,
+    PRICE_LEVEL_INEXPENSIVE: 1,
+    PRICE_LEVEL_MODERATE: 2,
+    PRICE_LEVEL_EXPENSIVE: 3,
+    PRICE_LEVEL_VERY_EXPENSIVE: 4,
+  }
+  return map[pl] ?? null
+}
+
 const TYPES = [
-  // food & drink
-  'bar', 'night_club', 'restaurant', 'cafe', 'pub',
+  // food & drink (granular — each type is a separate 20-cap request, so more = more coverage)
+  'restaurant', 'cafe', 'bar', 'pub', 'night_club',
+  'bakery', 'coffee_shop', 'meal_takeaway', 'wine_bar', 'fast_food_restaurant',
   // tourist attractions & culture (for travellers)
   'tourist_attraction', 'museum', 'art_gallery', 'park',
   'historical_landmark', 'church', 'zoo', 'aquarium',
@@ -40,7 +56,7 @@ async function searchType(lat, lng, radius, type, timeoutMs = 15000) {
       primaryType: p.primaryType || type,
       rating: p.rating ?? null,
       ratingCount: p.userRatingCount ?? null,
-      priceLevel: p.priceLevel ?? null,
+      priceLevel: priceLevelToInt(p.priceLevel),
       phone: p.internationalPhoneNumber || null,
       website: p.websiteUri || null,
       businessStatus: p.businessStatus || null,
@@ -86,6 +102,56 @@ async function fetchVenues(lat, lng, radius, opts = {}) {
     }
   }
   logger.info(`Google Places: ${out.length} venues`)
+  return out
+}
+
+// GRID-TILED fetch: divides the area into a grid of smaller search circles and runs
+// every type across every tile. Google caps each request at 20, but each TILE is a
+// separate request — so an N×N grid yields up to N*N*20 per type. This is how you get
+// "most venues in the city" from Google despite the per-request cap.
+//   centerLat/Lng: city centre · radiusM: half-width of the whole area to cover
+//   gridSize: tiles per side (3 = 3x3 = 9 tiles) · types: place types to fetch
+async function fetchVenuesGrid(centerLat, centerLng, radiusM, opts = {}) {
+  if (!config.google.key) { logger.warn('Google key missing'); return [] }
+  const { types = TYPES, gridSize = 4, timeoutMs = 12000, perTileSleep = 60 } = opts
+  const seen = new Set()
+  const out = []
+
+  // tile radius: each tile circle covers one cell of the grid (with slight overlap)
+  const cell = (radiusM * 2) / gridSize          // cell width in metres
+  const tileRadius = Math.round(cell * 0.72)     // circle that comfortably covers a cell
+  const mPerDegLat = 111320
+  const mPerDegLng = 111320 * Math.cos(centerLat * Math.PI / 180)
+
+  // build tile centres
+  const tiles = []
+  const half = (gridSize - 1) / 2
+  for (let i = 0; i < gridSize; i++) {
+    for (let j = 0; j < gridSize; j++) {
+      const dLat = ((i - half) * cell) / mPerDegLat
+      const dLng = ((j - half) * cell) / mPerDegLng
+      tiles.push({ lat: centerLat + dLat, lng: centerLng + dLng })
+    }
+  }
+
+  logger.info(`[google grid] ${tiles.length} tiles × ${types.length} types (tileRadius ${tileRadius}m)`)
+  let requests = 0
+  for (const tile of tiles) {
+    // run all types for this tile in parallel (one tile at a time = gentle on rate limits)
+    const settled = await Promise.allSettled(
+      types.map(type => searchType(tile.lat, tile.lng, tileRadius, type, timeoutMs))
+    )
+    requests += types.length
+    for (const r of settled) {
+      if (r.status === 'fulfilled') {
+        for (const v of r.value) {
+          if (!seen.has(v.providerId)) { seen.add(v.providerId); out.push(v) }
+        }
+      }
+    }
+    await sleep(perTileSleep)
+  }
+  logger.info(`[google grid] ${requests} requests → ${out.length} unique venues`)
   return out
 }
 
@@ -240,7 +306,7 @@ async function getPlaceDetails(placeId, timeoutMs = 8000) {
       lng: p.location?.longitude,
       rating: p.rating ?? null,
       ratingCount: p.userRatingCount ?? null,
-      priceLevel: p.priceLevel ?? null,
+      priceLevel: priceLevelToInt(p.priceLevel),
       phone: p.internationalPhoneNumber || null,
       website: p.websiteUri || null,
       googleMapsUrl: p.googleMapsUri || null,
@@ -306,7 +372,7 @@ async function searchTextPlaces(textQuery, lat, lng, radius = 3000, opts = {}) {
       primaryType: p.primaryType || includedType || (p.types || [])[0] || null,
       rating: p.rating ?? null,
       ratingCount: p.userRatingCount ?? null,
-      priceLevel: p.priceLevel ?? null,
+      priceLevel: priceLevelToInt(p.priceLevel),
       phone: p.internationalPhoneNumber || null,
       website: p.websiteUri || null,
       businessStatus: p.businessStatus || null,
@@ -325,4 +391,4 @@ async function searchTextPlaces(textQuery, lat, lng, radius = 3000, opts = {}) {
 }
 
 
-module.exports = { fetchVenues, findPlace, findPlaceDetails, reverseGeocode, getPlaceDetails, searchTextPlaces }
+module.exports = { fetchVenues, fetchVenuesGrid, findPlace, findPlaceDetails, reverseGeocode, getPlaceDetails, searchTextPlaces }

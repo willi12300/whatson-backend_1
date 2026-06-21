@@ -9,6 +9,9 @@ const { findPlace, reverseGeocode } = require('../clients/google')
 const { buildSuggestions } = require('../services/suggestionMode')
 const { detectSearchIntent } = require('../services/decisionRules')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
+const { getVenueProfile } = require('../services/venueProfile')
+const { upsertVenue } = require('../services/sync')
+const { scheduleVenueEnrichment } = require('../services/backgroundEnrichment')
 const logger = require('../utils/logger')
 const router = express.Router()
 
@@ -89,7 +92,9 @@ VERY IMPORTANT — how to trigger a plan:
 TWO DIFFERENT MODES — choose the right marker:
 - [[PLAN]] = the user wants ONE specific plan/itinerary ("plan my night", "sort me a day out", "we want food then drinks").
 - [[SUGGEST]] = the user is asking OPEN-ENDED what's good, browsing, or undecided ("what can we do this weekend?", "what's good around here?", "any ideas?", "what's on?"). This shows them a SPREAD of options (nearby places, hidden gems, attractions, events) to pick from — guidance without forcing one plan.
-- When someone's just exploring or asking what's around, prefer [[SUGGEST]] — don't railroad them into a single itinerary. Use a short warm hand-off, e.g. "Loads you could do — here's a few ideas to pick from. [[SUGGEST]]"`
+- When someone's just exploring or asking what's around, prefer [[SUGGEST]] — don't railroad them into a single itinerary. Use a short warm hand-off, e.g. "Loads you could do — here's a few ideas to pick from. [[SUGGEST]]"
+
+- [[LOOKUP: place name]] = the user asked about a SPECIFIC named place ("tell me about Berry & Rye", "what's The Cavern Club like?", "is Mowgli any good?", "show me Panoramic 34"). Emit this marker with the exact place name so we can pull up its full profile (ratings, reviews, photos). Keep your text a short warm intro, e.g. "Let me pull that up for you. [[LOOKUP: Berry & Rye]]". Only use this when they name a real, specific venue to inspect — NOT for general categories ("a nice bar") which should use [[SUGGEST]].`
 
 // POST /concierge  { message, history?, selectedCity, lat, lng }
 //   history: full prior thread [{ role:'user'|'sappo', text }]
@@ -153,9 +158,17 @@ router.post('/', async (req, res, next) => {
     // GEMINI decides the mode by ending its message with a marker:
     //  [[PLAN]]    → build one complete itinerary (Concierge Mode)
     //  [[SUGGEST]] → return a curated SPREAD of options (Suggestion Mode)
+    //  [[LOOKUP: name]] → user named a SPECIFIC place to inspect → return its profile
     const geminiWantsPlan = /\[\[PLAN\]\]/i.test(reply)
     const geminiWantsSuggest = /\[\[SUGGEST\]\]/i.test(reply)
-    const cleanReply = reply.replace(/\[\[PLAN\]\]/ig, '').replace(/\[\[SUGGEST\]\]/ig, '').trim()
+    const lookupMatch = reply.match(/\[\[LOOKUP:\s*([^\]]+)\]\]/i)
+    const cleanReply = reply.replace(/\[\[PLAN\]\]/ig, '').replace(/\[\[SUGGEST\]\]/ig, '').replace(/\[\[LOOKUP:[^\]]*\]\]/ig, '').trim()
+
+    // NAMED PLACE LOOKUP — user asked about a specific venue by name → show its profile.
+    if (lookupMatch) {
+      const placeName = lookupMatch[1].trim()
+      return await lookupNamedPlace(res, { placeName, userLoc, sayBefore: cleanReply })
+    }
 
     // Also detect open-ended "what's good" questions directly (belt and braces).
     const looksOpenEnded = /\b(what('?s| is| can)|things to do|what should|recommend|ideas|suggestions?|whats on|what'?s on|explore|show me)\b/i.test(message)
@@ -230,6 +243,60 @@ function mergeIntent(thread, extracted = {}) {
 }
 
 // SUGGESTION MODE: return a curated spread of options (not one fixed plan).
+// NAMED PLACE LOOKUP: user asked about a specific venue by name → return its profile.
+// First try the local DB (fast, and most places are there after sync), then Google as fallback.
+async function lookupNamedPlace(res, { placeName, userLoc, sayBefore }) {
+  try {
+    const city = userLoc?.cityName || null
+    // 1. Try to find it in our own DB by fuzzy name match (optionally within the city).
+    const params = [`%${placeName}%`]
+    let where = 'name ILIKE $1'
+    if (city) { params.push(city); where += ` AND city = $${params.length}` }
+    const { rows } = await query(
+      `SELECT id, name FROM venues WHERE ${where} ORDER BY rating_count DESC NULLS LAST LIMIT 1`,
+      params
+    )
+
+    let venueId = rows[0]?.id || null
+
+    // 2. Not in DB → try Google to locate it, then create a profile.
+    if (!venueId) {
+      const found = await findPlace(`${placeName}${city ? ', ' + city : ''}`).catch(() => null)
+      if (found && found.lat != null) {
+        const upsert = {
+          name: found.name || placeName, lat: found.lat, lng: found.lng,
+          address: found.address || null, google_place_id: found.googlePlaceId || null,
+          rating: found.rating || null, rating_count: found.ratingCount || null,
+          category_slug: found.primaryType || 'other',
+          cover_photo: found.photoUrl || null, google_maps_url: found.googleMapsUrl || null,
+        }
+        const result = await upsertVenue(upsert, city || 'Liverpool').catch(() => null)
+        if (result?.id) {
+          venueId = result.id
+          scheduleVenueEnrichment(result.id, 'ai_lookup')   // pulls TripAdvisor ratings/reviews
+        }
+      }
+    } else {
+      scheduleVenueEnrichment(venueId, 'ai_lookup')
+    }
+
+    if (!venueId) {
+      return res.json({ type: 'reply', say: `I couldn't find a place called "${placeName}" near ${city || 'you'}. Want me to suggest some similar spots instead?` })
+    }
+
+    const profile = await getVenueProfile(venueId, { lat: userLoc?.lat, lng: userLoc?.lng }).catch(() => null)
+    return res.json({
+      type: 'venue_profile',
+      say: sayBefore && sayBefore.length <= 160 ? sayBefore : `Here's ${profile?.name || placeName} — have a look.`,
+      venueId,
+      venue: profile || { id: venueId, name: placeName },
+    })
+  } catch (err) {
+    logger.error('[concierge] lookupNamedPlace failed:', err.message)
+    return res.json({ type: 'reply', say: `I had trouble pulling that place up — want me to suggest some options instead?` })
+  }
+}
+
 async function makeSuggestions(res, { userLoc, weather, boosts, sayBefore, intent = null, thread = [], userId = null, deviceId = null }) {
   try {
     let wx = weather

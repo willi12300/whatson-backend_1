@@ -69,11 +69,16 @@ async function syncCity(cityPreset) {
   const stats = { venuesAdded:0, venuesUpdated:0, eventsAdded:0, eventsUpdated:0 }
   try {
     logger.info(`=== SYNC START: ${cityName} ===`)
+    // Google grid-tiling is the PRIMARY source (high quality, deep coverage despite the
+    // 20-per-request cap). OSM is an optional supplement controlled by SYNC_USE_OSM.
+    const useOsm = process.env.SYNC_USE_OSM === 'true'   // default OFF — Google-first
+    const gridSize = parseInt(process.env.SYNC_GRID_SIZE || '4', 10)
     const [g, f, o] = await Promise.all([
-      google.fetchVenues(cityPreset.lat, cityPreset.lng, cityPreset.radiusMeters),
+      google.fetchVenuesGrid(cityPreset.lat, cityPreset.lng, cityPreset.radiusMeters, { gridSize }),
       foursquare.fetchVenues(cityPreset.lat, cityPreset.lng, cityPreset.radiusMeters),
-      osm.fetchVenues(cityPreset.bbox),
+      useOsm ? osm.fetchVenues(cityPreset.bbox) : Promise.resolve([]),
     ])
+    logger.info(`Sources → Google(grid): ${g.length}, Foursquare: ${f.length}, OSM: ${o.length}`)
     const candidates = [...g, ...f, ...o]
     logger.info(`Raw candidates: ${candidates.length}`)
     const clusters = deduplicate(candidates)
