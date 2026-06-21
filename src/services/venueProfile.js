@@ -543,9 +543,9 @@ async function syncTripAdvisorBatch({ city = null, limit = 25, force = false } =
   const params = []
   const where = []
   if (city) { params.push(city); where.push(`city = $${params.length}`) }
-  if (!force) where.push(`(tripadvisor_location_id IS NULL OR tripadvisor_rating IS NULL OR tripadvisor_last_checked IS NULL OR tripadvisor_last_checked < now() - interval '7 days')`)
+  if (!force) where.push(`(tripadvisor_last_checked IS NULL OR tripadvisor_last_checked < now() - interval '30 days')`)
   params.push(Number(limit) || 25)
-  const sql = `SELECT * FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY rating_count DESC NULLS LAST, rating DESC NULLS LAST LIMIT $${params.length}`
+  const sql = `SELECT * FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY tripadvisor_last_checked ASC NULLS FIRST, rating_count DESC NULLS LAST LIMIT $${params.length}`
   const { rows } = await query(sql, params)
   const results = []
   for (const venue of rows) {
@@ -596,9 +596,12 @@ async function syncGoogleBatch({ city = null, limit = 25, force = false } = {}) 
   const params = []
   const where = []
   if (city) { params.push(city); where.push(`city = $${params.length}`) }
-  if (!force) where.push(`(google_place_id IS NULL OR rating IS NULL OR google_last_checked IS NULL OR google_last_checked < now() - interval '7 days')`)
+  // A venue "needs enriching" only if it hasn't been checked recently. We must NOT
+  // use "rating IS NULL" here — many real venues (stations, some pubs) have no Google
+  // rating, so they'd be re-selected forever. google_last_checked is the source of truth.
+  if (!force) where.push(`(google_last_checked IS NULL OR google_last_checked < now() - interval '30 days')`)
   params.push(Number(limit) || 25)
-  const sql = `SELECT * FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY rating_count DESC NULLS LAST, rating DESC NULLS LAST LIMIT $${params.length}`
+  const sql = `SELECT * FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY google_last_checked ASC NULLS FIRST, rating_count DESC NULLS LAST LIMIT $${params.length}`
   const { rows } = await query(sql, params)
   const results = []
   for (const venue of rows) {

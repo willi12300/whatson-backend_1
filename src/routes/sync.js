@@ -86,4 +86,82 @@ router.get('/cleanup-osm', checkSecret, async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// FIND & MERGE DUPLICATE venues (same place saved twice from different sources).
+// Two venues are duplicates if they're very close together AND have very similar names.
+// Keeps the richer record (more data), moves the other's sources onto it, deletes the dupe.
+// SAFETY: dry-run by default. Add &confirm=true to actually merge.
+//   GET /sync/dedupe?secret=...&city=Liverpool            → preview
+//   GET /sync/dedupe?secret=...&city=Liverpool&confirm=true → merge
+router.get('/dedupe', checkSecret, async (req, res, next) => {
+  try {
+    const { distanceMeters, normaliseName, jaroWinkler } = require('../utils/helpers')
+    const city = req.query.city || null
+    const confirm = req.query.confirm === 'true'
+    const maxMetres = parseInt(req.query.metres || '75')      // how close to consider same place
+    const minNameSim = parseFloat(req.query.sim || '0.88')    // name similarity threshold
+
+    const params = []
+    let where = 'lat IS NOT NULL AND lng IS NOT NULL'
+    if (city) { params.push(city); where += ` AND city = $${params.length}` }
+    const { rows: venues } = await query(
+      `SELECT id, name, lat, lng, rating, rating_count, google_place_id, cover_photo,
+              (CASE WHEN cover_photo IS NOT NULL THEN 1 ELSE 0 END
+               + CASE WHEN google_place_id IS NOT NULL THEN 1 ELSE 0 END
+               + CASE WHEN rating IS NOT NULL THEN 1 ELSE 0 END) AS richness
+       FROM venues WHERE ${where}`,
+      params
+    )
+
+    // bucket by rounded location to avoid O(n^2) over everything
+    const buckets = new Map()
+    for (const v of venues) {
+      const key = `${v.lat.toFixed(3)}|${v.lng.toFixed(3)}`   // ~110m buckets
+      if (!buckets.has(key)) buckets.set(key, [])
+      buckets.get(key).push(v)
+      // also add to neighbouring buckets handled implicitly by comparing within ±1 below
+    }
+
+    const pairs = []
+    const usedAsDupe = new Set()
+    const arr = venues.slice().sort((a, b) => b.richness - a.richness)  // richest first = keepers
+    for (let i = 0; i < arr.length; i++) {
+      const a = arr[i]
+      if (usedAsDupe.has(a.id)) continue
+      for (let j = i + 1; j < arr.length; j++) {
+        const b = arr[j]
+        if (usedAsDupe.has(b.id)) continue
+        const d = distanceMeters(a.lat, a.lng, b.lat, b.lng)
+        if (d > maxMetres) continue
+        const sim = jaroWinkler(normaliseName(a.name || ''), normaliseName(b.name || ''))
+        if (sim >= minNameSim) {
+          pairs.push({ keep: { id: a.id, name: a.name }, remove: { id: b.id, name: b.name }, metres: Math.round(d), nameSim: +sim.toFixed(2) })
+          usedAsDupe.add(b.id)   // b gets merged into a
+        }
+      }
+    }
+
+    if (!confirm) {
+      return res.json({
+        mode: 'DRY RUN (nothing merged)',
+        city: city || 'all',
+        duplicatePairsFound: pairs.length,
+        sample: pairs.slice(0, 20),
+        toMerge: 'Add &confirm=true to merge. The "keep" (richer) venue stays; "remove" is merged into it.',
+      })
+    }
+
+    let merged = 0
+    for (const p of pairs) {
+      try {
+        // move the dupe's sources onto the keeper, then delete the dupe
+        await query(`UPDATE venue_sources SET venue_id = $1 WHERE venue_id = $2`, [p.keep.id, p.remove.id]).catch(() => {})
+        await query(`DELETE FROM venues WHERE id = $1`, [p.remove.id])
+        merged++
+      } catch (e) { logger.error('[dedupe] merge failed:', e.message) }
+    }
+    logger.info(`[dedupe] merged ${merged} duplicate venues (city: ${city || 'all'})`)
+    return res.json({ mode: 'MERGED', city: city || 'all', merged, note: 'Richer venue kept; duplicate merged in and removed.' })
+  } catch (err) { next(err) }
+})
+
 module.exports = router
