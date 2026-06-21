@@ -13,6 +13,38 @@ const router = express.Router()
 // Hit this in a browser after enabling Places API (New) to confirm it works.
 // GET /venues/debug/counts?city=Liverpool
 // Shows how many venues are actually in the DB per category — diagnoses a sparse DB.
+// GET /venues/debug/enrichment?city=Liverpool
+// Shows the TRUTH about enrichment: how many venues were checked vs actually have data.
+// Diagnoses "it jumped to 0" — tells us if venues were marked checked without being enriched.
+router.get('/debug/enrichment', async (req, res) => {
+  try {
+    const city = req.query.city || 'Liverpool'
+    const r = await query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE google_last_checked IS NOT NULL)::int AS google_checked,
+         COUNT(*) FILTER (WHERE google_place_id IS NOT NULL)::int AS has_google_id,
+         COUNT(*) FILTER (WHERE rating IS NOT NULL)::int AS has_rating,
+         COUNT(*) FILTER (WHERE cover_photo IS NOT NULL)::int AS has_photo,
+         COUNT(*) FILTER (WHERE google_last_checked IS NULL)::int AS never_checked,
+         COUNT(*) FILTER (WHERE tripadvisor_last_checked IS NOT NULL)::int AS ta_checked,
+         COUNT(*) FILTER (WHERE tripadvisor_rating IS NOT NULL)::int AS has_ta_rating
+       FROM venues WHERE city = $1`,
+      [city]
+    )
+    const d = r.rows[0]
+    return res.json({
+      city,
+      ...d,
+      reading: {
+        google: `${d.has_google_id}/${d.total} matched to Google, ${d.has_photo} have photos, ${d.has_rating} have ratings`,
+        stillToCheck: `${d.never_checked} venues never checked by Google yet`,
+        tripadvisor: `${d.has_ta_rating}/${d.total} have TripAdvisor ratings`,
+      },
+    })
+  } catch (e) { return res.json({ error: e.message }) }
+})
+
 router.get('/debug/counts', async (req, res) => {
   try {
     const city = req.query.city || 'Liverpool'
