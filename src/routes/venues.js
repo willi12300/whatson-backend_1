@@ -1,6 +1,6 @@
 const express = require('express')
 const { query } = require('../db/pool')
-const { distanceMeters, normaliseName } = require('../utils/helpers')
+const { distanceMeters, normaliseName, repairVenuePhotos } = require('../utils/helpers')
 const { nearbySearch } = require('../services/nearbySearch')
 const { fetchVenues, findPlaceDetails } = require('../clients/google')
 const logger = require('../utils/logger')
@@ -260,9 +260,9 @@ router.get('/', async (req, res, next) => {
     }
     params.push(parseInt(limit))
     const { rows } = await query(`SELECT id,name,category_slug,lat,lng,address,city,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,claimed FROM venues WHERE ${where.join(' AND ')} LIMIT $${params.length}`, params)
-    let result = rows
+    let result = rows.map(repairVenuePhotos)
     if (lat && lng) {
-      result = rows.map(v => ({ ...v, distance_m: Math.round(distanceMeters(parseFloat(lat), parseFloat(lng), v.lat, v.lng)) }))
+      result = result.map(v => ({ ...v, distance_m: Math.round(distanceMeters(parseFloat(lat), parseFloat(lng), v.lat, v.lng)) }))
         .filter(v => v.distance_m <= radius)
         .sort((a, b) => a.distance_m - b.distance_m)
     }
@@ -289,7 +289,7 @@ router.get('/list/trending', async (req, res, next) => {
       ORDER BY (COALESCE(v.rating,0) * COALESCE(v.rating_count,0)) DESC, upcoming_events DESC
       LIMIT $${params.length}
     `, params)
-    res.json({ venues: rows })
+    res.json({ venues: rows.map(repairVenuePhotos) })
   } catch (err) { next(err) }
 })
 
