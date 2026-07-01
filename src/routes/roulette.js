@@ -10,8 +10,9 @@ const { reverseGeocode } = require('../clients/google')
 const { gatherCandidates, getRecentSpins, recordSpin, storeIntelligence, saveDiscoveredVenue } = require('../services/rouletteEngine')
 const logger = require('../utils/logger')
 const { getUserSignals, getVenueSignalMap, venueLearningScore, recordInteraction } = require('../services/behaviorLearning')
-const { detectChain, modeAllowsChains, CHAIN_PENALTY } = require('../services/chainDetection')
-const { qualityScore, isKnownPoorQuality } = require('../services/qualityScore')
+const { modeAllowsChains } = require('../services/chainDetection')
+const { isKnownPoorQuality } = require('../services/qualityScore')
+const { computeSappoScore } = require('../services/sappoScore')
 const router = express.Router()
 
 // Internal broad categories used by the decision engine.
@@ -301,131 +302,155 @@ router.post('/', async (req, res, next) => {
     const rejected = []
     let afterCategoryVenues = 0, afterCategoryEvents = 0, afterVibeVenues = 0, afterVibeEvents = 0
 
-    // Score venues with hard category lock first.
+    // Score venues. HARD GATES (category, distance, closed, vibe, quality)
+    // reject candidates outright; everything that survives is ranked by the
+    // weighted SappoScore model (30 quality / 25 uniqueness / 20 vibe /
+    // 15 proximity / 10 trending).
+    const radiusKm = radiusM / 1000
     const scoredVenues = venues.map(v => {
-      let score = 0, reasons = [], reject = false, rejectReason = null
+      let reasons = [], reject = false, rejectReason = null
+      let modeMatch = false, vibeBoost = 0, learning = 0, plannerBoost = 0
+
+      // ── GATE: category lock ──
       const mm = matchesModeVenue(v, mode)
       if (!mm.ok) { reject = true; rejectReason = mm.reason }
       else afterCategoryVenues++
 
+      // ── GATE: distance outer bound (weighted decay handled in the model) ──
       const km = haversineKm(lat, lng, v.lat, v.lng)
       if (!reject && km != null) {
         if (km * 1000 > radiusM * 1.35 && distance !== 'anywhere') { reject = true; rejectReason = 'too_far' }
-        else {
-          score += Math.max(0, 35 - km * 10)
-          if (km * 1000 <= radiusM) reasons.push('nearby')
-        }
+        else if (km * 1000 <= radiusM) reasons.push('nearby')
       }
 
+      // ── GATE: closed now ──
       const open = isOpenNow(v.opening_hours, when)
       if (!reject) {
         if (open === false) { reject = true; rejectReason = 'closed_now' }
-        else if (open === true) { score += 14; reasons.push('open now') }
+        else if (open === true) reasons.push('open now')
       }
 
+      // ── GATE: vibe hard-block (also collect boost for the vibe bucket) ──
       if (!reject) {
         const vibeResult = vibeCheckCandidate({ kind: 'venue', v }, vibe)
         if (!vibeResult.ok) { reject = true; rejectReason = vibeResult.reason }
         else {
           afterVibeVenues++
-          score += vibeResult.boost || 0
+          vibeBoost = vibeResult.boost || 0
           if (vibeResult.reason) reasons.push(vibeResult.reason)
         }
       }
 
-      // Quality: rewards known-good, penalises known-bad, neutral on missing
-      // data, and dampens thin-signal ratings (4.9 from 3 reviews ≠ excellent).
-      if (!reject) {
-        if (isKnownPoorQuality(v)) { reject = true; rejectReason = 'known_poor_quality' }
-        else {
-          const q = qualityScore(v)
-          score += q.score
-          if (q.reason) reasons.push(q.reason)
-        }
-      }
-      if (!reject && v.id) {
-        const learning = venueLearningScore({ ...v, type: 'venue' }, venueSignalMap.get(Number(v.id)), userSignals)
-        score += learning
-        if (learning >= 8) reasons.push('popular with Sappo users')
-      }
+      // ── GATE: known-poor quality (never drops missing-data venues) ──
+      if (!reject && isKnownPoorQuality(v)) { reject = true; rejectReason = 'known_poor_quality' }
 
-      if (!reject) {
-        const pf = priceFits(v.price_level, budget)
-        score += pf.score
-        if (pf.reason && pf.score > 0) reasons.push(pf.reason)
-      }
-
+      // ── Collect remaining sub-signals for the model ──
       const groups = venueGroups(v)
-      if (!reject && (MODE_RULES[mode]?.venueAllow || []).some(g => groups.has(g))) {
-        score += 30; reasons.push(`matches ${mode.replace('_', ' ')}`)
+      if (!reject) {
+        modeMatch = (MODE_RULES[mode]?.venueAllow || []).some(g => groups.has(g))
+        if (v.id) {
+          learning = venueLearningScore({ ...v, type: 'venue' }, venueSignalMap.get(Number(v.id)), userSignals)
+          if (learning >= 8) reasons.push('popular with Sappo users')
+        }
+        if (boosts?.categoryBoost?.[v.category_slug]) plannerBoost = Math.min(boosts.categoryBoost[v.category_slug], 10)
       }
 
-      // Hidden gem: boost smaller high-rated places, penalise giant obvious tourist traps.
-      if (!reject && mode === 'hidden_gem') {
-        if ((v.rating_count || 0) > 2500) score -= 15
-        else if ((v.rating_count || 0) < 800 && (v.rating || 0) >= 4.2) { score += 18; reasons.push('feels like a hidden gem') }
+      // ── The weighted SappoScore ──
+      let score = 0, buckets = null, isChainVenue = false
+      if (!reject) {
+        const wantChains = modeAllowsChains(mode, { allowChains })
+        const sappo = computeSappoScore(v, { mode, km, radiusKm, allowChains: wantChains, modeMatch, vibeBoost, learning, plannerBoost })
+        score = sappo.score
+        buckets = sappo.buckets
+        isChainVenue = sappo.isChain
+        for (const r of sappo.reasons) reasons.push(r)
+
+        // ── Post-adjustments (preferences & penalties, not quality buckets) ──
+        // Budget: nudge on price fit.
+        const pf = priceFits(v.price_level, budget)
+        score += pf.score * 0.4
+        if (pf.reason && pf.score > 0) reasons.push(pf.reason)
+
+        // Rainy-day / indoor weather: gently down-weight scenic outdoor spots.
+        if ((mode === 'rainy_day' || weather?.planningHint?.mode === 'indoor') && groups.has('scenic')) score -= 6
       }
 
-      if (!reject && (mode === 'rainy_day' || weather?.planningHint?.mode === 'indoor') && groups.has('scenic')) score -= 16
-      if (!reject && boosts?.categoryBoost?.[v.category_slug]) score += Math.min(boosts.categoryBoost[v.category_slug], 10)
-
-      // Chain / franchise penalty. Independent, characterful places are the
-      // heart of Roulette — chains are pushed down hard but NOT rejected, so
-      // they can still surface if explicitly wanted or if nothing else fits.
-      let isChainVenue = false
-      if (!reject && !modeAllowsChains(mode, { allowChains })) {
-        const chain = detectChain(v.name)
-        if (chain.isChain) { score += CHAIN_PENALTY; isChainVenue = true }
-      }
-
-      const item = { kind: 'venue', v, score, reasons, reject, rejectReason, km, open, groups, isChain: isChainVenue }
-      item.score += repetitionPenalty(keyOf(item))
+      const item = { kind: 'venue', v, score, buckets, reasons, reject, rejectReason, km, open, groups, isChain: isChainVenue }
+      item.score += repetitionPenalty(keyOf(item)) * 0.15   // scale penalty to 0..100 range
       if (reject) pushReject(rejected, v, rejectReason)
       return item
     }).filter(s => !s.reject && s.score > -500)
 
-    // Score events with mode-specific event matching. Food won't get comedy unless it is actually a food event.
+    // Score events. Events don't fit the venue quality buckets (no rating,
+    // time-sensitive), so they get their own 0..100 model built from
+    // event-appropriate signals — kept on the SAME 0..100 scale as venues so
+    // mixed-mode pools compare them fairly instead of by scale accident.
     const scoredEvents = events.map(e => {
-      let score = 0, reasons = [], reject = false, rejectReason = null
+      let reasons = [], reject = false, rejectReason = null
+      let proximity = 55, timeliness = 40, vibeBoost = 0, sourceBoost = 0, modeBoost = 0, budgetAdj = 0
+
       const mm = matchesModeEvent(e, mode)
       if (!mm.ok) { reject = true; rejectReason = mm.reason }
       else afterCategoryEvents++
 
+      // ── GATE: distance outer bound (events allow a wider bound than venues) ──
       const km = (e.lat != null) ? haversineKm(lat, lng, e.lat, e.lng) : null
       if (!reject && km != null) {
         if (km * 1000 > radiusM * 2 && distance !== 'anywhere') { reject = true; rejectReason = 'too_far' }
-        else { score += Math.max(0, 30 - km * 7); if (km * 1000 <= radiusM) reasons.push('nearby') }
+        else {
+          const r = Math.max(0.2, (radiusM / 1000))
+          proximity = Math.max(0, Math.min(100, 100 * Math.exp(-0.5 * (km / r))))
+          if (km * 1000 <= radiusM) reasons.push('nearby')
+        }
       }
 
+      // ── GATE: event must be upcoming; sooner = higher timeliness ──
       const hrs = (new Date(e.starts_at) - when) / 3600000
       if (!reject) {
-        if (hrs >= 0 && hrs <= 12) { score += 32; reasons.push('on today') }
-        else if (hrs <= 48 && hrs >= 0) { score += 22; reasons.push('on soon') }
-        else if (hrs <= 24 * 7 && hrs >= 0) { score += 10; reasons.push('this week') }
+        if (hrs >= 0 && hrs <= 12) { timeliness = 100; reasons.push('on today') }
+        else if (hrs <= 48 && hrs >= 0) { timeliness = 80; reasons.push('on soon') }
+        else if (hrs <= 24 * 7 && hrs >= 0) { timeliness = 55; reasons.push('this week') }
         else if (hrs < 0) { reject = true; rejectReason = 'event_passed' }
+        else { timeliness = 40 }
       }
 
+      // ── GATE: vibe hard-block ──
       if (!reject) {
         const vibeResult = vibeCheckCandidate({ kind: 'event', e }, vibe)
         if (!vibeResult.ok) { reject = true; rejectReason = vibeResult.reason }
         else {
           afterVibeEvents++
-          score += vibeResult.boost || 0
+          vibeBoost = vibeResult.boost || 0
           if (vibeResult.reason) reasons.push(vibeResult.reason)
         }
       }
 
       if (!reject) {
         const p = (e.provider || '').toLowerCase()
-        if (p.includes('skiddle') || p.includes('eventbrite') || p.includes('ticketmaster')) { score += 18; reasons.push(`${cap(p)} event`) }
-        if (mode === 'live_event') { score += 35; reasons.push('a live event') }
-        if (mode === 'date_night') { score += 12; reasons.push('good for a date') }
-        if (budget === 'cheap' && e.is_free) { score += 12; reasons.push('free') }
-        if (budget === 'cheap' && e.min_price && Number(e.min_price) > 30) score -= 12
+        if (p.includes('skiddle') || p.includes('eventbrite') || p.includes('ticketmaster')) { sourceBoost = 12; reasons.push(`${cap(p)} event`) }
+        if (mode === 'live_event') { modeBoost += 25; reasons.push('a live event') }
+        if (mode === 'date_night') { modeBoost += 10; reasons.push('good for a date') }
+        if (budget === 'cheap' && e.is_free) { budgetAdj += 8; reasons.push('free') }
+        if (budget === 'cheap' && e.min_price && Number(e.min_price) > 30) budgetAdj -= 8
       }
 
-      const item = { kind: 'event', e, score, reasons, reject, rejectReason, km }
-      item.score += repetitionPenalty(keyOf(item))
+      // Combine on a 0..100 scale. Events lean on timeliness + proximity, with
+      // vibe/source/mode as boosts. Weighting mirrors the venue model's spirit:
+      // "is it on, is it near, does it fit".
+      let score = 0, buckets = null
+      if (!reject) {
+        const vibeVal = Math.min(100, 50 + vibeBoost * 2 + modeBoost)
+        score =
+          timeliness * 0.35 +
+          proximity * 0.30 +
+          vibeVal * 0.25 +
+          Math.min(100, 40 + sourceBoost * 3) * 0.10
+        score += budgetAdj
+        buckets = { timeliness: Math.round(timeliness), proximity: Math.round(proximity), vibe: Math.round(vibeVal) }
+      }
+
+      const item = { kind: 'event', e, score, buckets, reasons, reject, rejectReason, km }
+      item.score += repetitionPenalty(keyOf(item)) * 0.15
       if (reject) pushReject(rejected, e, rejectReason)
       return item
     }).filter(s => !s.reject && s.score > -500)
@@ -469,7 +494,7 @@ router.post('/', async (req, res, next) => {
         finalPool: pool.length,
         rejectedExamples: rejected,
       },
-      topPool: pool.slice(0, 10).map(item => ({ title: item.kind === 'event' ? item.e.name : item.v.name, kind: item.kind, score: Math.round(item.score), reasons: item.reasons }))
+      topPool: pool.slice(0, 10).map(item => ({ title: item.kind === 'event' ? item.e.name : item.v.name, kind: item.kind, score: Math.round(item.score), buckets: item.buckets || null, reasons: item.reasons }))
     }
 
     logger.info('[roulette AUDIT] ' + JSON.stringify(debug))
