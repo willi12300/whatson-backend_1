@@ -60,23 +60,4 @@ function jaroWinkler(s1, s2) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
-// Google Place photo URLs embed the API key, so they break when the key changes.
-// Rewrite to the CURRENT key at serve time. Safe on non-Google URLs (returns as-is).
-function repairPhotoUrl(url) {
-  if (!url || typeof url !== 'string') return url
-  if (!url.includes('places.googleapis.com')) return url
-  let key
-  try { key = require('../config').config.google?.key } catch { key = null }
-  if (!key) return url
-  if (/[?&]key=/.test(url)) return url.replace(/([?&]key=)[^&]*/, `$1${key}`)
-  return url + (url.includes('?') ? '&' : '?') + `key=${key}`
-}
-function repairVenuePhotos(v) {
-  if (!v) return v
-  const out = { ...v }
-  if (out.cover_photo) out.cover_photo = repairPhotoUrl(out.cover_photo)
-  if (Array.isArray(out.photos)) out.photos = out.photos.map(p => (typeof p === 'string' ? repairPhotoUrl(p) : (p && p.url ? { ...p, url: repairPhotoUrl(p.url) } : p)))
-  return out
-}
-
-module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep, repairPhotoUrl, repairVenuePhotos }
+module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep }

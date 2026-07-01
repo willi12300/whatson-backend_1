@@ -3,28 +3,7 @@ const { distanceMeters } = require('../utils/helpers')
 const { estimateBusy } = require('./busyEstimate')
 const { enrichTripAdvisorForVenue, hasTripAdvisor } = require('../clients/tripadvisor')
 const { getPlaceDetails, findPlaceDetails } = require('../clients/google')
-const { config } = require('../config')
 const logger = require('../utils/logger')
-
-// Google Place photo URLs embed the API key. When the key changes (e.g. account
-// switch), every saved URL breaks. This rewrites any Google photo URL to use the
-// CURRENT key at serve time — so existing AND new photos always work, and a future
-// key change never breaks images again.
-function repairPhotoUrl(url) {
-  if (!url || typeof url !== 'string') return url
-  if (!url.includes('places.googleapis.com')) return url   // only Google photo URLs
-  const currentKey = config.google?.key
-  if (!currentKey) return url
-  // swap whatever key= is in there for the current one (or add it if missing)
-  if (/[?&]key=/.test(url)) return url.replace(/([?&]key=)[^&]*/, `$1${currentKey}`)
-  return url + (url.includes('?') ? '&' : '?') + `key=${currentKey}`
-}
-function repairPhoto(p) {
-  if (!p) return p
-  if (typeof p === 'string') return repairPhotoUrl(p)
-  if (p.url) return { ...p, url: repairPhotoUrl(p.url) }
-  return p
-}
 
 function toNum(x) {
   const n = Number(x)
@@ -462,10 +441,9 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     WHERE id=$7
   `, [sappoScore, JSON.stringify(whyChosen), JSON.stringify(vibeTags), busyLevel, busyEstimate.reason, mapsUrl, id]).catch(() => {})
 
-  const photosRaw = Array.isArray(asJson(venue.photos, [])) ? asJson(venue.photos, []) : []
-  const photos = photosRaw.map(repairPhoto)
+  const photos = Array.isArray(asJson(venue.photos, [])) ? asJson(venue.photos, []) : []
   const googleReviewSample = Array.isArray(asJson(venue.google_review_sample, [])) ? asJson(venue.google_review_sample, []) : []
-  const cover = repairPhotoUrl(venue.cover_photo) || photos?.[0]?.url || photos?.[0] || null
+  const cover = venue.cover_photo || photos?.[0]?.url || photos?.[0] || null
 
   return {
     ...venue,

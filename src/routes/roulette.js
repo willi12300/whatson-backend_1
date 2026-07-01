@@ -10,6 +10,7 @@ const { reverseGeocode } = require('../clients/google')
 const { gatherCandidates, getRecentSpins, recordSpin, storeIntelligence, saveDiscoveredVenue } = require('../services/rouletteEngine')
 const logger = require('../utils/logger')
 const { getUserSignals, getVenueSignalMap, venueLearningScore, recordInteraction } = require('../services/behaviorLearning')
+const { detectChain, modeAllowsChains, CHAIN_PENALTY } = require('../services/chainDetection')
 const router = express.Router()
 
 // Internal broad categories used by the decision engine.
@@ -253,7 +254,7 @@ function pushReject(rejects, item, reason) {
 // POST /roulette { mode, distance, budget, who, vibe, spinMode, lat, lng, selectedCity, deviceId }
 router.post('/', async (req, res, next) => {
   try {
-    const { mode = 'anything', distance = '20min', budget, who, vibe = 'balanced', spinMode = 'discover', selectedCity, deviceId } = req.body || {}
+    const { mode = 'anything', distance = '20min', budget, who, vibe = 'balanced', spinMode = 'discover', selectedCity, deviceId, allowChains } = req.body || {}
     let { lat, lng } = req.body || {}
 
     let cityName
@@ -359,7 +360,16 @@ router.post('/', async (req, res, next) => {
       if (!reject && (mode === 'rainy_day' || weather?.planningHint?.mode === 'indoor') && groups.has('scenic')) score -= 16
       if (!reject && boosts?.categoryBoost?.[v.category_slug]) score += Math.min(boosts.categoryBoost[v.category_slug], 10)
 
-      const item = { kind: 'venue', v, score, reasons, reject, rejectReason, km, open, groups }
+      // Chain / franchise penalty. Independent, characterful places are the
+      // heart of Roulette — chains are pushed down hard but NOT rejected, so
+      // they can still surface if explicitly wanted or if nothing else fits.
+      let isChainVenue = false
+      if (!reject && !modeAllowsChains(mode, { allowChains })) {
+        const chain = detectChain(v.name)
+        if (chain.isChain) { score += CHAIN_PENALTY; isChainVenue = true }
+      }
+
+      const item = { kind: 'venue', v, score, reasons, reject, rejectReason, km, open, groups, isChain: isChainVenue }
       item.score += repetitionPenalty(keyOf(item))
       if (reject) pushReject(rejected, v, rejectReason)
       return item
