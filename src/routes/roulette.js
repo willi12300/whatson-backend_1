@@ -11,6 +11,7 @@ const { gatherCandidates, getRecentSpins, recordSpin, storeIntelligence, saveDis
 const logger = require('../utils/logger')
 const { getUserSignals, getVenueSignalMap, venueLearningScore, recordInteraction } = require('../services/behaviorLearning')
 const { detectChain, modeAllowsChains, CHAIN_PENALTY } = require('../services/chainDetection')
+const { qualityScore, isKnownPoorQuality } = require('../services/qualityScore')
 const router = express.Router()
 
 // Internal broad categories used by the decision engine.
@@ -332,13 +333,21 @@ router.post('/', async (req, res, next) => {
         }
       }
 
-      if (!reject && v.rating) { score += Math.min(v.rating * 4, 20); if (v.rating >= 4.4) reasons.push('highly rated') }
+      // Quality: rewards known-good, penalises known-bad, neutral on missing
+      // data, and dampens thin-signal ratings (4.9 from 3 reviews ≠ excellent).
+      if (!reject) {
+        if (isKnownPoorQuality(v)) { reject = true; rejectReason = 'known_poor_quality' }
+        else {
+          const q = qualityScore(v)
+          score += q.score
+          if (q.reason) reasons.push(q.reason)
+        }
+      }
       if (!reject && v.id) {
         const learning = venueLearningScore({ ...v, type: 'venue' }, venueSignalMap.get(Number(v.id)), userSignals)
         score += learning
         if (learning >= 8) reasons.push('popular with Sappo users')
       }
-      if (!reject) score += Math.min((v.rating_count || 0) / 350, 8)
 
       if (!reject) {
         const pf = priceFits(v.price_level, budget)
