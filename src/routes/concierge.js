@@ -9,6 +9,7 @@ const { findPlace, reverseGeocode } = require('../clients/google')
 const { buildSuggestions } = require('../services/suggestionMode')
 const { detectSearchIntent } = require('../services/decisionRules')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
+const { getCityKnowledge } = require('../services/cityKnowledge')
 const { getVenueProfile } = require('../services/venueProfile')
 const { upsertVenue } = require('../services/sync')
 const { scheduleVenueEnrichment } = require('../services/backgroundEnrichment')
@@ -128,6 +129,14 @@ router.post('/', async (req, res, next) => {
       : `\n\nLOCATION: We don't have the user's GPS. If they ask for nearby places, ask where they're planning from.`
     const dynamicSystem = SYSTEM + locPrompt
 
+    // Ground the AI in what this city ACTUALLY has, so it chats like a local who
+    // knows the place (real venue names, honest about gaps) rather than guessing.
+    // Grounds the CONVERSATION only — plan/suggestion cards are still built by
+    // the engine from live data, so a stray name-drop can't corrupt a plan.
+    let cityKnowledge = ''
+    try { cityKnowledge = await getCityKnowledge(userLoc.cityName) } catch {}
+    const groundedSystem = dynamicSystem + cityKnowledge
+
     // Build the full conversation for Gemini (full history = memory = no loops).
     const thread = [...history, { role: 'user', text: message }]
     const geminiHistory = thread.map(m => ({
@@ -141,7 +150,7 @@ router.post('/', async (req, res, next) => {
 
     // Let Gemini just TALK — plain text. It decides when it's ready to plan by ending
     // its message with the marker [[PLAN]] (we strip it before showing the user).
-    const reply = await chatText(dynamicSystem, geminiHistory, { temperature: 1.0 })
+    const reply = await chatText(groundedSystem, geminiHistory, { temperature: 1.0 })
 
     // If Gemini is down, fall back gracefully.
     if (!reply) {
