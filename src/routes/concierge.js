@@ -67,6 +67,40 @@ async function resolveLocation({ lat, lng, selectedCity, promptCity }) {
   return { cityName, country, lat: useLat, lng: useLng }
 }
 
+// Turn the weather object into a SHORT prompt fragment that tells the AI the
+// facts AND when they're worth mentioning. Weather should colour advice only
+// when it's decision-relevant (imminent rain, a sunny break, a cold snap) —
+// not be recited on every reply. Returns '' when weather is unavailable so the
+// AI simply chats as normal (fail-open).
+function buildWeatherPrompt(wx) {
+  if (!wx || !wx.current) return ''
+  const cur = wx.current
+  const hourly = Array.isArray(wx.hourly) ? wx.hourly : []
+  const temp = cur.temp
+  const cond = cur.condition
+
+  // Look at the next several hours for rain / a dry window.
+  const next = hourly.slice(0, 6)
+  const rainSoon = next.find(h => (h.rainChance != null && h.rainChance >= 50) || h.indoor)
+  const firstDry = next.find(h => (h.rainChance == null || h.rainChance < 30) && !h.indoor)
+  const allWet = next.length > 0 && next.every(h => h.indoor || (h.rainChance != null && h.rainChance >= 50))
+
+  const bits = []
+  bits.push(`\n\nWEATHER (right now in ${wx.meta?.key ? 'their area' : 'the area'}): ${temp}°C, ${cond}. `)
+
+  // Decision guidance — this is what makes it feel smart rather than a readout.
+  const guide = []
+  if (allWet) guide.push(`It's wet for the next few hours — lean towards indoor spots (museums, cosy pubs, galleries, covered markets) and mention the rain naturally.`)
+  else if (rainSoon && rainSoon.hour != null) guide.push(`Rain likely around ${rainSoon.hour}:00 — it's fine to suggest something outdoors before then and something indoors after, and you can mention it.`)
+  else if (typeof temp === 'number' && temp <= 6) guide.push(`It's cold — favour warm, indoor, cosy options and you can acknowledge the chill.`)
+  else if (typeof temp === 'number' && temp >= 20 && /clear|sun|fair|mostly clear/i.test(cond)) guide.push(`Lovely and warm — great for outdoor spots, viewpoints, waterfront, beer gardens; feel free to make the most of it.`)
+  else guide.push(`Weather's unremarkable — only mention it if the user brings it up or if it's genuinely relevant to a choice.`)
+
+  guide.push(`Never recite the forecast for its own sake — weave it in ONLY when it actually shapes the recommendation. One light mention is plenty.`)
+  bits.push(guide.join(' '))
+  return bits.join('')
+}
+
 const SYSTEM = `You are Sappo — a warm, switched-on local guide who helps travellers and visitors make the most of a place. Someone's arrived in a city (or has a few hours, a day, a weekend) and doesn't know what to do. Your job is to understand what they're after and build them a brilliant day or outing.
 
 You talk like a real person — friendly, natural, a little personality, short messages like a mate who knows the city. NOT a corporate bot, NOT a form.
@@ -133,9 +167,13 @@ router.post('/', async (req, res, next) => {
     // knows the place (real venue names, honest about gaps) rather than guessing.
     // Grounds the CONVERSATION only — plan/suggestion cards are still built by
     // the engine from live data, so a stray name-drop can't corrupt a plan.
-    let cityKnowledge = ''
-    try { cityKnowledge = await getCityKnowledge(userLoc.cityName) } catch {}
-    const groundedSystem = dynamicSystem + cityKnowledge
+    // Fetch grounding + weather in PARALLEL so we don't stack their latency.
+    const [cityKnowledge, chatWeather] = await Promise.all([
+      getCityKnowledge(userLoc.cityName).catch(() => ''),
+      getWeather(userLoc.lat, userLoc.lng).catch(() => null),
+    ])
+    const weatherPrompt = buildWeatherPrompt(chatWeather)
+    const groundedSystem = dynamicSystem + cityKnowledge + weatherPrompt
 
     // Build the full conversation for Gemini (full history = memory = no loops).
     const thread = [...history, { role: 'user', text: message }]
