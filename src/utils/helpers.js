@@ -60,4 +60,44 @@ function jaroWinkler(s1, s2) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
-module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep }
+// ── Photo URL key repair ─────────────────────────────────────────────────────
+// Google Places (New) photo URLs embed the API key directly in the URL, e.g.
+//   https://places.googleapis.com/v1/places/XXX/photos/YYY/media?maxWidthPx=400&key=OLD_KEY
+// When the Google key changes (e.g. the old account was blocked and a new key
+// issued), every URL SAVED with the old key stops working and images break.
+//
+// Fix: at SERVE time, rewrite the key on any Google photo URL to the CURRENT
+// key. Saved URLs can then be from any past key and still resolve. Reads the
+// current key from GOOGLE_PLACES_API_KEY at call time (no config import → no
+// circular dependency).
+function repairPhotoUrl(url, currentKey) {
+  const key = currentKey || process.env.GOOGLE_PLACES_API_KEY
+  if (!url || typeof url !== 'string' || !key) return url
+  if (!url.includes('places.googleapis.com')) return url   // only Google photo URLs
+  // Replace an existing key=... param, or append one if somehow missing.
+  if (/[?&]key=/.test(url)) return url.replace(/([?&]key=)[^&]*/i, `$1${key}`)
+  return url + (url.includes('?') ? '&' : '?') + `key=${key}`
+}
+
+// Repair every photo URL on a venue row/object IN PLACE-ish (returns a new
+// object). Handles `cover_photo`, `photos` (array of strings or {url} objects),
+// and `heroImages`. Safe to call on any venue shape; leaves non-Google URLs be.
+function repairVenuePhotos(venue, currentKey) {
+  if (!venue || typeof venue !== 'object') return venue
+  const key = currentKey || process.env.GOOGLE_PLACES_API_KEY
+  const fixOne = (p) => {
+    if (!p) return p
+    if (typeof p === 'string') return repairPhotoUrl(p, key)
+    if (typeof p === 'object' && p.url) return { ...p, url: repairPhotoUrl(p.url, key) }
+    return p
+  }
+  let photos = venue.photos
+  if (typeof photos === 'string') { try { photos = JSON.parse(photos) } catch { /* leave */ } }
+  const out = { ...venue }
+  if (venue.cover_photo) out.cover_photo = repairPhotoUrl(venue.cover_photo, key)
+  if (Array.isArray(photos)) out.photos = photos.map(fixOne)
+  if (Array.isArray(venue.heroImages)) out.heroImages = venue.heroImages.map(p => repairPhotoUrl(p, key))
+  return out
+}
+
+module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep, repairPhotoUrl, repairVenuePhotos }

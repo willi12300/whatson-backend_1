@@ -1,5 +1,5 @@
 const { query } = require('../db/pool')
-const { distanceMeters } = require('../utils/helpers')
+const { distanceMeters, repairPhotoUrl } = require('../utils/helpers')
 const { estimateBusy } = require('./busyEstimate')
 const { enrichTripAdvisorForVenue, hasTripAdvisor } = require('../clients/tripadvisor')
 const { getPlaceDetails, findPlaceDetails } = require('../clients/google')
@@ -464,14 +464,19 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
 
   const photos = Array.isArray(asJson(venue.photos, [])) ? asJson(venue.photos, []) : []
   const googleReviewSample = Array.isArray(asJson(venue.google_review_sample, [])) ? asJson(venue.google_review_sample, []) : []
-  const cover = venue.cover_photo || photos?.[0]?.url || photos?.[0] || null
+  const rawCover = venue.cover_photo || photos?.[0]?.url || photos?.[0] || null
+  // Rewrite any Google photo URLs to the CURRENT key at serve time, so photos
+  // saved under an old/blocked key still load.
+  const cover = repairPhotoUrl(rawCover)
+  const repairedPhotos = photos.map(p => (p && p.url) ? { ...p, url: repairPhotoUrl(p.url) } : repairPhotoUrl(p))
 
   return {
     ...venue,
     category: categoryLabel(venue.category_slug),
     tags,
     cover_photo: cover,
-    heroImages: [cover, ...photos.map(p => p.url || p).filter(Boolean)].filter(Boolean),
+    photos: repairedPhotos,
+    heroImages: [cover, ...repairedPhotos.map(p => p.url || p).filter(Boolean)].filter(Boolean),
     events: eventsQ.rows,
     sources: sourcesQ.rows,
     offers: offersQ.rows,
