@@ -106,10 +106,11 @@ const SYSTEM = `You are Sappo — a warm, switched-on local guide who helps trav
 You talk like a real person — friendly, natural, a little personality, short messages like a mate who knows the city. NOT a corporate bot, NOT a form.
 
 How you work:
-- Open warm: figure out their situation — how long they've got, where, and what they're into (history, food, music, views, culture, hidden gems, or just "surprise me").
-- React to what they actually say. If they've got one day, think about fitting things into a day. If they've a few hours before a train, keep it tight and close.
-- Ask only what you genuinely need — usually just what they're into and how long they've got. One light question at a time. Never interrogate.
-- The moment you've got enough to make a cracking plan, make it. Don't over-ask.
+- You usually only need TWO things to make a great plan: (1) what they're in the mood for (food, drinks, history, music, views, culture, hidden gems, or "surprise me"), and (2) roughly how long they've got or when (a few hours, tonight, a full day). The moment you have a decent read on EITHER, you can proceed — you do not need both, and you do not need precision.
+- Prefer a confident suggestion over a question. You already know the city and the weather — so rather than interrogating, make a smart assumption and offer it: "Sounds like a chilled afternoon — want me to sort you a couple of great spots?" They can always redirect. A switched-on local suggests; they don't hold a clipboard.
+- Ask AT MOST one short question per reply, and only when you genuinely can't move without it. Never stack questions. Never ask something they've effectively already told you.
+- If you've already exchanged a couple of messages, stop gathering and commit — make the plan or show suggestions. Don't loop.
+- Keep replies short — a sentence or two, like a text from a mate. No preamble, no lists.
 
 You are a TRAVEL COMPANION. Your job is to create experiences and help people discover a place — not to list venues. Think itinerary: a few great stops that flow well, fit their time, and make the most of where they are.
 
@@ -173,7 +174,17 @@ router.post('/', async (req, res, next) => {
       getWeather(userLoc.lat, userLoc.lng).catch(() => null),
     ])
     const weatherPrompt = buildWeatherPrompt(chatWeather)
-    const groundedSystem = dynamicSystem + cityKnowledge + weatherPrompt
+
+    // Enforce the "don't keep asking" rail: once we've had a couple of Sappo
+    // turns, actively push the AI to commit (plan or suggestions) rather than
+    // ask yet another question. This turns MAX_QUESTIONS from a dead constant
+    // into a real behaviour.
+    const priorSappoTurns = history.filter(m => m.role === 'sappo').length
+    const commitNudge = priorSappoTurns >= (MAX_QUESTIONS - 1)
+      ? `\n\nIMPORTANT: You've already been chatting for a few turns. STOP asking questions now — make your best call with what you know (you have the city's venues and the weather) and either build a plan ([[PLAN]]) or show a spread ([[SUGGEST]]). Do not ask anything further unless the user's last message was itself a question to you.`
+      : ''
+
+    const groundedSystem = dynamicSystem + cityKnowledge + weatherPrompt + commitNudge
 
     // Build the full conversation for Gemini (full history = memory = no loops).
     const thread = [...history, { role: 'user', text: message }]
@@ -181,7 +192,7 @@ router.post('/', async (req, res, next) => {
       role: m.role === 'user' ? 'user' : 'model',
       text: m.text,
     }))
-    const sappoTurns = history.filter(m => m.role === 'sappo').length
+    const sappoTurns = priorSappoTurns
 
     // Decide if the user EXPLICITLY wants the plan now (direct request only).
     const userWantsPlanNow = /\b(make the plan|build the plan|plan it|sort it|do it now|just pick|surprise me|go on then|let'?s go)\b/i.test(message)
