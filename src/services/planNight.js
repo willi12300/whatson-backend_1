@@ -4,7 +4,7 @@
 
 const { query } = require('../db/pool')
 const { generateJSON } = require('../clients/gemini')
-const { travelBetween } = require('../clients/routes')
+const { getTravel } = require('./travelProvider')
 const { estimatePlanCost, budgetGuidance } = require('./costEstimate')
 const { estimateBusy } = require('./busyEstimate')
 const logger = require('../utils/logger')
@@ -229,7 +229,7 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
     const from = stopsOut[i], to = stopsOut[i + 1]
     let leg = null
     try {
-      const t = await travelBetween({ lat: from.lat, lng: from.lng }, { lat: to.lat, lng: to.lng })
+      const t = await getTravel({ lat: from.lat, lng: from.lng }, { lat: to.lat, lng: to.lng })
       if (t) leg = t
     } catch (e) { /* ignore, leave null */ }
     legs.push(leg)
@@ -241,7 +241,7 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
   if (home?.lat != null && home?.lng != null && stopsOut.length) {
     const last = stopsOut[stopsOut.length - 1]
     try {
-      const t = await travelBetween({ lat: last.lat, lng: last.lng }, { lat: home.lat, lng: home.lng })
+      const t = await getTravel({ lat: last.lat, lng: last.lng }, { lat: home.lat, lng: home.lng })
       if (t) gettingHome = { from: last.name, travel: t, homeLabel: home.label || 'home' }
     } catch (e) { /* ignore */ }
   }
@@ -256,6 +256,10 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
   }
   const cost = estimatePlanCost(stopsOut, { transportPerPerson: Math.round(transportPerPerson) })
 
+  // Human-readable travel summary — so the plan can TALK about getting around,
+  // not just carry silent leg data. Uses the primary mode of each leg.
+  const travelSummary = buildTravelSummary(stopsOut, gettingHome)
+
   return {
     title: ai.title || 'Your night out',
     vibe: ai.vibe || '',
@@ -263,10 +267,46 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
     reasoning: ai.reasoning || null,
     cost,
     stops: stopsOut,
+    travelSummary,
     weatherNote: weather?.planningHint?.note ? `Weather considered: ${weather.planningHint.note}.` : null,
     gettingHome,
     source: 'ai',
   }
+}
+
+// Turn the computed legs into one short, natural sentence about getting around.
+// e.g. "It's a short walk between the first two, then about a 12-min taxi to
+// the last — and roughly 20 mins home." Rail legs are called out as trains.
+function buildTravelSummary(stops, gettingHome) {
+  const legs = stops.map(s => s.travelToNext).filter(Boolean)
+  if (!legs.length && !gettingHome) return null
+
+  const phraseFor = (leg) => {
+    if (!leg) return null
+    const mode = leg.primary || 'driving'
+    const info = leg[mode]
+    if (!info) return null
+    const t = info.durationText || null
+    if (mode === 'walking') return t ? `a ${t} walk` : 'a short walk'
+    if (mode === 'cycling') return t ? `a ${t} cycle` : 'a short cycle'
+    if (mode === 'transit') {
+      const rail = info.looksLikeRail
+      return t ? `about ${t} by ${rail ? 'train' : 'public transport'}` : (rail ? 'a short train hop' : 'a short transit ride')
+    }
+    return t ? `about a ${t} taxi` : 'a short taxi'
+  }
+
+  const parts = legs.map(phraseFor).filter(Boolean)
+  let sentence = ''
+  if (parts.length === 1) sentence = `Getting between them is ${parts[0]}.`
+  else if (parts.length === 2) sentence = `It's ${parts[0]} to the second stop, then ${parts[1]} to the last.`
+  else if (parts.length > 2) sentence = `Hops between stops: ${parts.join(', then ')}.`
+
+  if (gettingHome?.travel) {
+    const homePhrase = phraseFor(gettingHome.travel)
+    if (homePhrase) sentence += `${sentence ? ' ' : ''}Then ${homePhrase} back to ${gettingHome.homeLabel || 'home'}.`
+  }
+  return sentence || null
 }
 
 // Deterministic fallback if Gemini is unavailable

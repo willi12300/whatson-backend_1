@@ -568,6 +568,7 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
     type: 'plan', say: sayBefore || "Here's what I'm thinking…", city: loc.cityName,
     title: plan.title, summary: plan.vibe, reasoning: plan.reasoning, cost: plan.cost,
     stops, gettingHome: plan.gettingHome, tip: plan.tip,
+    travel_summary: plan.travelSummary || null,
     weather_note: plan.weatherNote, geminiDown: geminiDown || false,
   })
 }
