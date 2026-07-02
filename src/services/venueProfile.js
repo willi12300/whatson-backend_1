@@ -3,6 +3,7 @@ const { distanceMeters } = require('../utils/helpers')
 const { estimateBusy } = require('./busyEstimate')
 const { enrichTripAdvisorForVenue, hasTripAdvisor } = require('../clients/tripadvisor')
 const { getPlaceDetails, findPlaceDetails } = require('../clients/google')
+const { deriveTagsForVenue } = require('./gemTags')
 const logger = require('../utils/logger')
 
 function toNum(x) {
@@ -172,6 +173,23 @@ function topReview(v) {
   return null
 }
 
+// Derive gem tags from a venue's stored review samples and persist them.
+// Reads only what's already saved (no new API calls). Safe to call after any
+// enrichment, or standalone from the backfill endpoint. Returns the result.
+async function refreshGemTags(venue) {
+  try {
+    const derived = deriveTagsForVenue(venue)
+    await query(
+      `UPDATE venues SET gem_tags=$1, gem_cautions=$2, gem_tags_checked=now() WHERE id=$3`,
+      [JSON.stringify(derived.tags), JSON.stringify(derived.cautions), venue.id]
+    )
+    return derived
+  } catch (e) {
+    logger.warn('[gemTags] refresh failed for venue ' + venue?.id + ': ' + e.message)
+    return { tags: [], cautions: [], reviewsSeen: 0 }
+  }
+}
+
 
 async function getGooglePlaceIdForVenue(venue) {
   if (venue.google_place_id) return venue.google_place_id
@@ -282,6 +300,9 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
         [venue.id, placeId, details.raw ? JSON.stringify(details.raw) : null]
       ).catch(() => {})
     }
+
+    // Derive gem tags from the freshly-saved reviews (best-effort, no new API).
+    await refreshGemTags({ ...venue, google_review_sample: reviews })
 
     return {
       ...venue,
@@ -626,4 +647,4 @@ async function syncGoogleBatch({ city = null, limit = 25, force = false } = {}) 
   }
 }
 
-module.exports = { getVenueProfile, deriveSappoScore, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch }
+module.exports = { getVenueProfile, deriveSappoScore, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch, refreshGemTags }

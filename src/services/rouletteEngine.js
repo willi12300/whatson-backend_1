@@ -84,7 +84,7 @@ async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5, goo
 
   // ---- DB reads (fast, local) run in parallel with each other ----
   const dbVenuesP = query(
-    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours, website
+    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours, website, gem_tags, gem_cautions
      FROM venues WHERE city = $1 AND name IS NOT NULL AND category_slug = ANY($2) LIMIT 400`,
     [cityName, cats]
   ).then(r => r.rows.map(v => ({ ...v, _src: 'db' }))).catch(e => { logger.error('[roulette] db venues failed:', e.message); return [] })

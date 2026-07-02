@@ -4,7 +4,7 @@ const { distanceMeters, normaliseName } = require('../utils/helpers')
 const { nearbySearch } = require('../services/nearbySearch')
 const { fetchVenues, findPlaceDetails } = require('../clients/google')
 const logger = require('../utils/logger')
-const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch } = require('../services/venueProfile')
+const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch, refreshGemTags } = require('../services/venueProfile')
 const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
 const { upsertVenue } = require('../services/sync')
 const router = express.Router()
@@ -355,6 +355,48 @@ router.post('/admin/sync-tripadvisor', async (req, res, next) => {
       force: String(req.query.force || req.body?.force || '').toLowerCase() === 'true',
     })
     res.json({ tripadvisor: 'SYNC_COMPLETE', ...out })
+  } catch (err) { next(err) }
+})
+
+// GET /venues/derive-gem-tags?secret=...&city=Liverpool&limit=50
+// Backfill gem tags from review text ALREADY stored on venues (no new API
+// calls, no Google billing). Run repeatedly until "scanned" reaches 0.
+router.get('/derive-gem-tags', async (req, res, next) => {
+  try {
+    if ((req.query.secret || '') !== process.env.SYNC_SECRET) {
+      return res.status(403).json({ error: 'Bad or missing secret' })
+    }
+    const city = req.query.city || 'Liverpool'
+    const limit = Math.min(parseInt(req.query.limit || '50'), 200)
+    // Pick venues with some review data that haven't been tagged yet (or are
+    // stale), oldest-checked first — mirrors the enrichment batch pattern.
+    const { rows } = await query(
+      `SELECT id, name, google_review_sample, tripadvisor_top_review
+         FROM venues
+        WHERE city ILIKE $1
+          AND (google_review_sample IS NOT NULL OR tripadvisor_top_review IS NOT NULL)
+          AND (gem_tags_checked IS NULL OR gem_tags_checked < now() - interval '30 days')
+        ORDER BY gem_tags_checked ASC NULLS FIRST
+        LIMIT $2`,
+      [city, limit]
+    )
+    let tagged = 0
+    const examples = []
+    for (const v of rows) {
+      const derived = await refreshGemTags(v)
+      if (derived.tags.length) {
+        tagged++
+        if (examples.length < 20) examples.push({ name: v.name, tags: derived.tags })
+      }
+    }
+    res.json({
+      gemTags: 'DERIVATION_RUN_COMPLETE',
+      city,
+      scanned: rows.length,
+      tagged,
+      examples,
+      note: 'Run this URL again for the next batch. Repeat until "scanned" reaches 0. Uses only stored review text — no API calls.',
+    })
   } catch (err) { next(err) }
 })
 

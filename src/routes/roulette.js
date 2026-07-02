@@ -582,6 +582,7 @@ router.post('/', async (req, res, next) => {
       why: `Chosen because it ${whyBits.length ? whyBits.join(', ') : 'fits what you fancied'} — a strong ${mode.replace('_', ' ')} match near you.`,
       rating: v.rating || null,
       review_count: v.rating_count || null,
+      tags: (() => { const t = v.gem_tags; if (Array.isArray(t)) return t; try { const p = JSON.parse(t); return Array.isArray(p) ? p : [] } catch { return [] } })(),
       lat: v.lat, lng: v.lng,
       address: v.address || null,
       source: v._src === 'google' ? 'Google Places' : 'Sappo',

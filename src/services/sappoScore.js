@@ -34,6 +34,24 @@ const WEIGHTS = {
 
 const clamp = (x, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, x))
 
+// Safely read a JSONB tag array that might arrive as an array or JSON string.
+function parseTags(val) {
+  if (Array.isArray(val)) return val
+  if (typeof val === 'string') { try { const p = JSON.parse(val); return Array.isArray(p) ? p : [] } catch { return [] } }
+  return []
+}
+
+// Tags that align with each mode/vibe, for the vibe bucket.
+const MODE_TAG_AFFINITY = {
+  date_night: ['romantic', 'cosy', 'great_atmosphere', 'great_cocktails'],
+  hidden_gem: ['hidden_gem', 'local_favourite', 'quirky', 'authentic'],
+  drinks: ['great_cocktails', 'great_atmosphere'],
+  food: ['great_food', 'authentic'],
+  coffee: ['great_coffee', 'cosy'],
+  family_day: ['family_friendly', 'good_for_groups'],
+  tourist_spot: ['great_views', 'beautiful', 'worth_visiting'],
+}
+
 // ── Quality bucket (0..100) ──
 // Built on qualityScore's signed output (roughly -40..+34), remapped onto
 // 0..100 with 50 = neutral/unknown. Missing data lands at ~50 (neutral),
@@ -53,12 +71,24 @@ function uniquenessBucket(v, { mode, allowChains }) {
   let u = 55                          // baseline: assume moderately distinctive
   const reviewCount = Number(v.rating_count) || 0
   const rating = Number(v.rating) || 0
+  const tags = parseTags(v.gem_tags)
 
   // Hidden-gem shape: well-rated but not mega-reviewed = feels like a find.
   if (reviewCount > 0 && reviewCount < 800 && rating >= 4.2) u += 25
   // Very high review counts read as "obvious / touristy", less unique.
   if (reviewCount > 3000) u -= 20
   else if (reviewCount > 1500) u -= 10
+
+  // Derived review tags are STRONG evidence — reviewers actually said this.
+  if (tags.includes('hidden_gem')) u += 22
+  if (tags.includes('local_favourite')) u += 16
+  if (tags.includes('independent')) u += 10
+  if (tags.includes('authentic')) u += 8
+  if (tags.includes('quirky')) u += 8
+  // Review-derived cautions pull uniqueness down.
+  const cautions = parseTags(v.gem_cautions)
+  if (cautions.includes('tourist_trap')) u -= 25
+  if (cautions.includes('generic')) u -= 15
 
   // Independent bonus vs chain penalty (unless chains are explicitly wanted).
   const chain = detectChain(v.name)
@@ -68,12 +98,16 @@ function uniquenessBucket(v, { mode, allowChains }) {
 
   // In hidden_gem mode, lean harder into the uniqueness signal.
   if (mode === 'hidden_gem') {
+    if (tags.includes('hidden_gem')) u += 12
     if (reviewCount > 0 && reviewCount < 500 && rating >= 4.3) u += 12
     if (reviewCount > 2500) u -= 15
   }
 
+  // Reason: prefer tag-based (reviewers said it) over the shape heuristic.
   let reason = null
-  if (!chain.isChain && reviewCount > 0 && reviewCount < 800 && rating >= 4.3) reason = 'feels like a hidden gem'
+  if (!chain.isChain && tags.includes('hidden_gem')) reason = 'a genuine hidden gem'
+  else if (!chain.isChain && tags.includes('local_favourite')) reason = 'a local favourite'
+  else if (!chain.isChain && reviewCount > 0 && reviewCount < 800 && rating >= 4.3) reason = 'feels like a hidden gem'
   return { value: clamp(u), isChain: chain.isChain, reason }
 }
 
@@ -81,13 +115,21 @@ function uniquenessBucket(v, { mode, allowChains }) {
 // How well the venue fits the requested mode + vibe, plus personalisation
 // (behaviour learning, planner boosts). The route computes the sub-signals
 // (it owns the vibe/mode/learning helpers) and passes them in.
-function vibeBucket({ modeMatch, vibeBoost, learning, plannerBoost }) {
+function vibeBucket(v, { mode, modeMatch, vibeBoost, learning, plannerBoost }) {
   let val = 45                        // neutral baseline
   if (modeMatch) val += 25            // venue is squarely in the requested mode
   val += (vibeBoost || 0) * 1.4       // vibeCheckCandidate boost (0..12ish)
   val += Math.min(learning || 0, 20)  // behaviour-learning signal, capped
   val += Math.min(plannerBoost || 0, 10)
-  return clamp(val)
+
+  // Review-derived tags that match the requested mode are strong vibe evidence.
+  const tags = parseTags(v.gem_tags)
+  const affinity = MODE_TAG_AFFINITY[mode] || []
+  let tagHits = 0
+  for (const t of affinity) if (tags.includes(t)) tagHits++
+  if (tagHits) val += Math.min(tagHits * 8, 20)
+
+  return { value: clamp(val), tagHits }
 }
 
 // ── Proximity bucket (0..100) ──
@@ -126,14 +168,14 @@ function computeSappoScore(v, ctx) {
 
   const quality = qualityBucket(v)
   const uniqueness = uniquenessBucket(v, { mode, allowChains })
-  const vibe = vibeBucket({ modeMatch, vibeBoost, learning, plannerBoost })
+  const vibe = vibeBucket(v, { mode, modeMatch, vibeBoost, learning, plannerBoost })
   const proximity = proximityBucket(km, radiusKm)
   const trending = trendingBucket(v, { learning })
 
   const score =
     quality.value * WEIGHTS.quality +
     uniqueness.value * WEIGHTS.uniqueness +
-    vibe * WEIGHTS.vibe +
+    vibe.value * WEIGHTS.vibe +
     proximity.value * WEIGHTS.proximity +
     trending.value * WEIGHTS.trending
 
@@ -147,7 +189,7 @@ function computeSappoScore(v, ctx) {
     buckets: {
       quality: Math.round(quality.value),
       uniqueness: Math.round(uniqueness.value),
-      vibe: Math.round(vibe),
+      vibe: Math.round(vibe.value),
       proximity: Math.round(proximity.value),
       trending: Math.round(trending.value),
     },
