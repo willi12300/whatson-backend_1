@@ -13,6 +13,7 @@ const { getUserSignals, getVenueSignalMap, venueLearningScore, recordInteraction
 const { modeAllowsChains } = require('../services/chainDetection')
 const { isKnownPoorQuality } = require('../services/qualityScore')
 const { computeSappoScore } = require('../services/sappoScore')
+const { getTimeContext, timeOfDayNudge } = require('../services/timeContext')
 const router = express.Router()
 
 // Internal broad categories used by the decision engine.
@@ -275,6 +276,20 @@ router.post('/', async (req, res, next) => {
     const radiusMiles = Math.max(2, Math.round(radiusM / 1609) || 5)
     const when = new Date()
 
+    // Time-of-day + daylight context (favours daytime sightseeing/outdoors,
+    // evening bars/nightlife — as a weight, never a filter). Daylight is
+    // computed astronomically from the city's coordinates so it's correct by
+    // season (a 5pm pier is great in June, pointless in dark December). tz is
+    // approximated from longitude so dayparts are roughly local to the city.
+    const cityTzOffset = Math.round(lng / 15)
+    const timeCtx = getTimeContext(when, lat, lng, cityTzOffset)
+
+    // How strongly time-of-day steers this mode. Open-ended modes get the full
+    // nudge; explicit modes (the user asked for drinks/food) get a light touch
+    // so the clock never overrides a direct choice.
+    const OPEN_ENDED = new Set(['anything', 'hidden_gem', 'tourist_spot', 'surprise'])
+    const timeWeight = OPEN_ENDED.has(mode) ? 1 : 0.35
+
     let weather = null
     try { weather = await getWeather(lat, lng) } catch {}
 
@@ -373,6 +388,12 @@ router.post('/', async (req, res, next) => {
 
         // Rainy-day / indoor weather: gently down-weight scenic outdoor spots.
         if ((mode === 'rainy_day' || weather?.planningHint?.mode === 'indoor') && groups.has('scenic')) score -= 6
+
+        // Time-of-day: favour time-appropriate venues (daytime sightseeing/
+        // outdoors, evening drinks/nightlife). Weight-only, mode-scaled.
+        const tod = timeOfDayNudge(groups, timeCtx)
+        if (tod.nudge) score += tod.nudge * timeWeight
+        if (tod.reason && tod.nudge * timeWeight >= 4) reasons.push(tod.reason)
       }
 
       const item = { kind: 'venue', v, score, buckets, reasons, reject, rejectReason, km, open, groups, isChain: isChainVenue }
@@ -480,6 +501,15 @@ router.post('/', async (req, res, next) => {
     const totalCandidates = (audit.dbVenues.count + audit.googlePlaces.count + audit.dbEvents.count + audit.skiddle.count + audit.ticketmaster.count + audit.eventbrite.count)
     const debug = {
       selected: { cityName, mode, vibe, who, distance, budget, lat, lng },
+      timeContext: {
+        hour: Math.round(timeCtx.hour * 10) / 10,
+        daypart: timeCtx.daypart,
+        daylight: Math.round(timeCtx.daylight * 100) / 100,
+        eveningness: Math.round(timeCtx.eveningness * 100) / 100,
+        sunrise: timeCtx.sunriseHour != null ? Math.round(timeCtx.sunriseHour * 100) / 100 : null,
+        sunset: timeCtx.sunsetHour != null ? Math.round(timeCtx.sunsetHour * 100) / 100 : null,
+        timeWeight,
+      },
       totalCandidates,
       audit,
       filtering: {
