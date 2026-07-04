@@ -8,6 +8,9 @@ const logger = require('../utils/logger')
 const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch, refreshGemTags } = require('../services/venueProfile')
 const { classifyIntent } = require('../services/searchIntent')
 const { buildSearchResults } = require('../services/searchResults')
+const { buildSuggestions } = require('../services/searchSuggestions')
+const { planNight } = require('../services/planNight')
+const { getWeather } = require('../clients/weather')
 const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
 const { upsertVenue } = require('../services/sync')
 const router = express.Router()
@@ -333,7 +336,37 @@ router.get('/smart-search', async (req, res, next) => {
     }
 
     const { sections, meta } = await buildSearchResults(intent, { city, lat, lng })
-    const allSections = topMatchSection ? [topMatchSection, ...sections] : sections
+
+    // Itinerary intent → actually generate the plan (via planNight) and put it
+    // FIRST, so "date night" leads with a ready-made plan, then the supporting
+    // Restaurants / Bars / Events / Hidden Gems sections beneath it.
+    let planSection = null
+    if (intent.intent === 'itinerary' && city) {
+      try {
+        const weather = (lat != null && lng != null) ? await getWeather(lat, lng).catch(() => null) : null
+        const plan = await planNight({
+          city, vibe: intent.vibe || 'balanced', text: raw,
+          categories: intent.categories || [], lat, lng, weather, stops: 3,
+        })
+        if (plan && !plan.error && Array.isArray(plan.stops) && plan.stops.length) {
+          planSection = {
+            key: 'plan', title: "Tonight's Recommended Plan", icon: '❤️', type: 'plan',
+            plan: {
+              title: plan.title, vibe: plan.vibe, tip: plan.tip,
+              stops: plan.stops, cost: plan.cost,
+              travelSummary: plan.travelSummary || null,
+              gettingHome: plan.gettingHome || null,
+            },
+          }
+        }
+      } catch (e) { logger.warn('[smart-search] plan generation failed: ' + e.message) }
+    }
+
+    const allSections = [
+      ...(planSection ? [planSection] : []),
+      ...(topMatchSection ? [topMatchSection] : []),
+      ...sections,
+    ]
 
     res.json({
       query: raw,
@@ -344,6 +377,21 @@ router.get('/smart-search', async (req, res, next) => {
       sections: allSections,
       meta,
     })
+  } catch (err) { next(err) }
+})
+
+// GET /venues/search-suggestions?city=Liverpool&lat=..&lng=..
+// Contextual chips for the EMPTY search bar, driven by weather + time of day +
+// local events. Each chip carries a `query` that feeds back into smart-search.
+router.get('/search-suggestions', async (req, res, next) => {
+  try {
+    const city = req.query.city || null
+    const lat = req.query.lat ? parseFloat(req.query.lat) : null
+    const lng = req.query.lng ? parseFloat(req.query.lng) : null
+    // Fetch weather only if we have coords; suggestions still work without it.
+    const weather = (lat != null && lng != null) ? await getWeather(lat, lng).catch(() => null) : null
+    const out = await buildSuggestions({ city, lat, lng, weather })
+    res.json(out)
   } catch (err) { next(err) }
 })
 
