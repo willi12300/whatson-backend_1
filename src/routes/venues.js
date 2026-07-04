@@ -6,6 +6,8 @@ const { nearbySearch } = require('../services/nearbySearch')
 const { fetchVenues, findPlaceDetails } = require('../clients/google')
 const logger = require('../utils/logger')
 const { getVenueProfile, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch, refreshGemTags } = require('../services/venueProfile')
+const { classifyIntent } = require('../services/searchIntent')
+const { buildSearchResults } = require('../services/searchResults')
 const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
 const { upsertVenue } = require('../services/sync')
 const router = express.Router()
@@ -276,6 +278,75 @@ router.get('/', async (req, res, next) => {
 // matches ranked by relevance (exact > prefix > fuzzy), then quality, then
 // (optionally) proximity. Typo-tolerant via pg_trgm similarity. Location is
 // optional — search works anywhere, and just nudges ties toward what's near.
+// GET /venues/smart-search?q=date+night&city=Liverpool&lat=..&lng=..
+// The unified search endpoint the search bar calls. Classifies intent, resolves
+// venue-name-vs-category, and returns a BLENDED, sectioned result — all from the
+// DB. The user just sees great results; the intent machinery is invisible.
+router.get('/smart-search', async (req, res, next) => {
+  try {
+    const raw = (req.query.q || req.query.search || '').toString().trim()
+    const city = req.query.city || null
+    const lat = req.query.lat ? parseFloat(req.query.lat) : null
+    const lng = req.query.lng ? parseFloat(req.query.lng) : null
+
+    if (raw.length < 2) {
+      return res.json({ query: raw, intent: 'empty', sections: [], note: 'Type to search.' })
+    }
+
+    const intent = classifyIntent(raw)
+
+    // Surprise → tell the frontend to route to Sappo (roulette/discovery).
+    if (intent.intent === 'surprise') {
+      return res.json({ query: raw, intent: 'surprise', routeTo: 'sappo', sections: [], say: 'Feeling spontaneous? Let Sappo pick for you.' })
+    }
+
+    // Resolve venue-name-vs-category: for short queries that might be a specific
+    // place ("Sefton Park"), check for a strong exact venue match first. If we
+    // find one, surface it as a top "Best match" section before any category blend.
+    let topMatchSection = null
+    if (intent.intent === 'venue_lookup' || intent.maybeVenueName) {
+      const nq = normaliseName(raw)
+      const { rows } = await query(
+        `SELECT id,name,category_slug,lat,lng,address,city,rating,rating_count,price_level,cover_photo,photos,gem_tags,
+                similarity(normalised_name, $1) AS sim, (normalised_name = $1) AS exact
+           FROM venues
+          WHERE (normalised_name % $1 OR normalised_name LIKE $2)
+            AND business_status IS DISTINCT FROM 'CLOSED_PERMANENTLY'
+            ${city ? 'AND city = $3' : ''}
+          ORDER BY (normalised_name = $1) DESC, similarity(normalised_name, $1) DESC
+          LIMIT 3`,
+        city ? [nq, `%${nq}%`, city] : [nq, `%${nq}%`]
+      ).catch(() => ({ rows: [] }))
+      const strong = rows.filter(r => r.exact || Number(r.sim) >= 0.65)
+      if (strong.length) {
+        const items = strong.map(v => {
+          const { normalised_name, sim, exact, gem_tags, ...rest } = v
+          const out = repairVenuePhotos(rest)
+          out.tags = (() => { try { return Array.isArray(gem_tags) ? gem_tags : JSON.parse(gem_tags || '[]') } catch { return [] } })()
+          return out
+        })
+        topMatchSection = { key: 'best_match', title: 'Best Match', icon: '📍', type: 'venues', items }
+        if (intent.intent === 'venue_lookup') {
+          return res.json({ query: raw, intent: 'venue_lookup', autoJumpVenueId: strong[0].exact ? strong[0].id : null, sections: [topMatchSection] })
+        }
+      }
+    }
+
+    const { sections, meta } = await buildSearchResults(intent, { city, lat, lng })
+    const allSections = topMatchSection ? [topMatchSection, ...sections] : sections
+
+    res.json({
+      query: raw,
+      intent: intent.intent,
+      vibe: intent.vibe || null,
+      needsAI: intent.needsAI || false,
+      routeTo: intent.intent === 'itinerary' ? 'plan' : null,
+      sections: allSections,
+      meta,
+    })
+  } catch (err) { next(err) }
+})
+
 // Detect whether a search string is a BARE venue lookup ("Sefton Park") or a
 // REQUEST that happens to mention things ("somewhere a bit like Sefton Park").
 // This is what stops the search bar slamming Sefton Park in the user's face
