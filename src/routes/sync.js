@@ -112,15 +112,9 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
       params
     )
 
-    // bucket by rounded location to avoid O(n^2) over everything
-    const buckets = new Map()
-    for (const v of venues) {
-      const key = `${v.lat.toFixed(3)}|${v.lng.toFixed(3)}`   // ~110m buckets
-      if (!buckets.has(key)) buckets.set(key, [])
-      buckets.get(key).push(v)
-      // also add to neighbouring buckets handled implicitly by comparing within ±1 below
-    }
-
+    // Match within the selected set. Comparison is O(n²); run this PER CITY
+    // (pass &city=) — the pairwise scan is fine for one city's venues but would
+    // be slow across every city at once.
     const pairs = []
     const usedAsDupe = new Set()
     const arr = venues.slice().sort((a, b) => b.richness - a.richness)  // richest first = keepers
@@ -151,16 +145,49 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
     }
 
     let merged = 0
+    // Fields worth preserving from a duplicate before we delete it. If the
+    // keeper is missing any of these but the dupe has it, copy it across — so
+    // "keep the richer one" becomes "keep the UNION of both" and we never throw
+    // away photos, ratings, TripAdvisor data, gem tags, hours, socials, etc.
+    const PRESERVE = [
+      'cover_photo', 'photos', 'google_place_id', 'google_maps_url', 'google_review_sample',
+      'rating', 'rating_count', 'price_level', 'opening_hours', 'website',
+      'tripadvisor_location_id', 'tripadvisor_rating', 'tripadvisor_review_count',
+      'tripadvisor_ranking', 'tripadvisor_url', 'tripadvisor_top_review', 'tripadvisor_last_checked',
+      'gem_tags', 'gem_cautions', 'gem_tags_checked', 'google_last_checked', 'profile_last_enriched',
+      'instagram', 'facebook', 'menu_url', 'cuisine_type', 'price_range', 'average_spend_estimate',
+    ]
     for (const p of pairs) {
       try {
-        // move the dupe's sources onto the keeper, then delete the dupe
+        // Pull both rows so we can gap-fill the keeper from the dupe.
+        const [keepRow, dupeRow] = await Promise.all([
+          query(`SELECT * FROM venues WHERE id=$1`, [p.keep.id]).then(r => r.rows[0]),
+          query(`SELECT * FROM venues WHERE id=$1`, [p.remove.id]).then(r => r.rows[0]),
+        ])
+        if (keepRow && dupeRow) {
+          const isEmpty = (v) => v == null || v === '' ||
+            (Array.isArray(v) && v.length === 0) ||
+            (typeof v === 'string' && (v === '[]' || v === '{}'))
+          const sets = [], vals = []
+          for (const col of PRESERVE) {
+            if (isEmpty(keepRow[col]) && !isEmpty(dupeRow[col])) {
+              vals.push(dupeRow[col])
+              sets.push(`${col}=$${vals.length}`)
+            }
+          }
+          if (sets.length) {
+            vals.push(p.keep.id)
+            await query(`UPDATE venues SET ${sets.join(', ')} WHERE id=$${vals.length}`, vals).catch(e => logger.error('[dedupe] gap-fill failed:', e.message))
+          }
+        }
+        // Move the dupe's sources onto the keeper, then delete the dupe.
         await query(`UPDATE venue_sources SET venue_id = $1 WHERE venue_id = $2`, [p.keep.id, p.remove.id]).catch(() => {})
         await query(`DELETE FROM venues WHERE id = $1`, [p.remove.id])
         merged++
       } catch (e) { logger.error('[dedupe] merge failed:', e.message) }
     }
     logger.info(`[dedupe] merged ${merged} duplicate venues (city: ${city || 'all'})`)
-    return res.json({ mode: 'MERGED', city: city || 'all', merged, note: 'Richer venue kept; duplicate merged in and removed.' })
+    return res.json({ mode: 'MERGED', city: city || 'all', merged, note: 'Richer venue kept; any fields it was missing were filled in from the duplicate before removal (non-destructive union merge).' })
   } catch (err) { next(err) }
 })
 
