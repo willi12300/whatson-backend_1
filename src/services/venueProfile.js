@@ -214,10 +214,17 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
   const checked = venue.google_last_checked ? new Date(venue.google_last_checked) : (venue.profile_last_enriched ? new Date(venue.profile_last_enriched) : null)
   const googleReviews = asJson(venue.google_review_sample, [])
   const hasReviews = Array.isArray(googleReviews) && googleReviews.some(r => r?.text)
-  const profileFresh = checked && (Date.now() - checked.getTime()) < 7 * 24 * 60 * 60 * 1000
-  const hoursFresh = isHoursFresh(venue, 15)
-  // Reviews/ratings can be cached for days, but opening status must be refreshed regularly.
-  if (!force && profileFresh && hoursFresh && venue.google_place_id && (hasReviews || venue.rating)) return venue
+  // Opening hours barely change, so we refresh Google data at most monthly. This
+  // matches the 30-day enrichment window used elsewhere and keeps Google calls
+  // to a minimum: a fully-enriched venue re-opened within the month is served
+  // straight from the DB with NO Google request. The ~monthly re-check still
+  // catches permanent closures and the rare hours change.
+  const REFRESH_MS = 30 * 24 * 60 * 60 * 1000
+  const profileFresh = checked && (Date.now() - checked.getTime()) < REFRESH_MS
+  // A venue is "fully enriched" if we have a place id plus either reviews or a
+  // rating — enough to serve a rich profile without touching Google.
+  const fullyEnriched = venue.google_place_id && (hasReviews || venue.rating)
+  if (!force && profileFresh && fullyEnriched) return venue
 
   const debug = { queriesTried: [], method: null, placeId: null, status: 'started' }
   try {
@@ -335,8 +342,11 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
 async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
   if (!hasTripAdvisor()) return venue
   const checked = venue.tripadvisor_last_checked ? new Date(venue.tripadvisor_last_checked) : null
-  const isFresh = checked && (Date.now() - checked.getTime()) < 7 * 24 * 60 * 60 * 1000
-  if (!force && isFresh && venue.tripadvisor_rating) return venue
+  // 30-day window, consistent with Google. Gate on "checked recently" ALONE —
+  // not on having a rating — so venues TripAdvisor couldn't match aren't
+  // re-queried on every single open (that was silent churn + wasted calls).
+  const isFresh = checked && (Date.now() - checked.getTime()) < 30 * 24 * 60 * 60 * 1000
+  if (!force && isFresh) return venue
 
   try {
     logger.info(`[venueProfile] TripAdvisor enrich ${force ? 'FORCE ' : ''}${venue.name} (${venue.id})`)
