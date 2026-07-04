@@ -123,19 +123,37 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
     const arr = venues.slice().sort((a, b) => b.richness - a.richness)  // richest first = keepers
 
     // ── Tier 1: exact Google Place ID matches ──
+    // A shared google_place_id USUALLY means the same real place — but not
+    // always. Bad enrichment can stamp the same place id on multiple different
+    // branches (e.g. 9 different Costa cafés all matched to one "Costa" id).
+    // A genuine duplicate is always in the SAME physical spot, so we still
+    // require the pair to be physically close. A shared place id on venues far
+    // apart is a DATA ERROR (different branches), not a duplicate — we skip and
+    // surface it so it can be re-enriched with correct per-branch ids.
+    // A true duplicate is essentially the SAME spot (same building/entrance),
+    // so we keep this tight — ~60m. Two same-named venues further apart than
+    // this sharing one place id are branches with a wrongly-shared id, not dupes.
+    const PLACE_ID_MAX_METRES = 60
+    const badPlaceIdGroups = []
     const byPlaceId = new Map()
     for (const v of arr) {
       if (!v.google_place_id) continue
       if (!byPlaceId.has(v.google_place_id)) byPlaceId.set(v.google_place_id, [])
       byPlaceId.get(v.google_place_id).push(v)
     }
-    for (const [, group] of byPlaceId) {
+    for (const [pid, group] of byPlaceId) {
       if (group.length < 2) continue
       const keeper = group[0]   // already richest-first
       for (let k = 1; k < group.length; k++) {
         const dupe = group[k]
         if (usedAsDupe.has(dupe.id)) continue
         const d = distanceMeters(keeper.lat, keeper.lng, dupe.lat, dupe.lng)
+        if (d > PLACE_ID_MAX_METRES) {
+          // Same place id but far apart → almost certainly different branches
+          // sharing a wrong id. Do NOT merge; flag for review/re-enrichment.
+          badPlaceIdGroups.push({ google_place_id: pid, keep: { id: keeper.id, name: keeper.name }, suspect: { id: dupe.id, name: dupe.name }, metres: Math.round(d) })
+          continue
+        }
         pairs.push({ keep: { id: keeper.id, name: keeper.name }, remove: { id: dupe.id, name: dupe.name }, metres: Math.round(d), nameSim: null, matchType: 'place_id' })
         usedAsDupe.add(dupe.id)
       }
@@ -170,6 +188,11 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
         city: city || 'all',
         duplicatePairsFound: pairs.length,
         sample: pairs.slice(0, sampleN),
+        badPlaceIdGroupsFound: badPlaceIdGroups.length,
+        badPlaceIdGroups: badPlaceIdGroups.slice(0, 100),
+        badPlaceIdNote: badPlaceIdGroups.length
+          ? 'These venues share a google_place_id but are far apart — almost certainly DIFFERENT branches wrongly given the same id. They were NOT merged. Re-enrich them to get correct per-branch place ids.'
+          : undefined,
         toMerge: 'Add &confirm=true to merge. The "keep" (richer) venue stays; "remove" is merged into it.',
       })
     }
