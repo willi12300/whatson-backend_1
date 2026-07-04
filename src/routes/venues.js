@@ -271,6 +271,136 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// GET /venues/search?q=berry+rye&city=Liverpool&lat=..&lng=..&limit=15
+// Dedicated name search for the search bar: type a venue name, get the best
+// matches ranked by relevance (exact > prefix > fuzzy), then quality, then
+// (optionally) proximity. Typo-tolerant via pg_trgm similarity. Location is
+// optional — search works anywhere, and just nudges ties toward what's near.
+// Detect whether a search string is a BARE venue lookup ("Sefton Park") or a
+// REQUEST that happens to mention things ("somewhere a bit like Sefton Park").
+// This is what stops the search bar slamming Sefton Park in the user's face
+// when they actually wanted somewhere similar. Pure string logic — no AI call.
+const REQUEST_PHRASES = [
+  'like ', 'similar to', 'somewhere', 'something', 'a place', 'place like', 'places',
+  'near ', 'close to', 'around ', 'nearby', 'by the', 'next to',
+  'what\'s on', 'whats on', 'what is on', 'things to do', 'to do in', 'to do near',
+  'where can', 'where should', 'where to', 'can i', 'should i', 'i want', 'i fancy',
+  'looking for', 'suggest', 'recommend', 'find me', 'find us', 'show me somewhere',
+  'good for', 'best place', 'best places', 'a bit like', 'kind of', 'sort of',
+  'vibe', 'atmosphere', 'cheap', 'romantic', 'fun', 'quiet', 'lively', 'tonight',
+  'this weekend', 'for a date', 'with kids', 'with friends', 'for lunch', 'for dinner',
+  'for drinks', 'for coffee', 'anywhere', 'options', 'ideas',
+]
+function looksLikeRequest(rawInput) {
+  // Normalise curly/smart apostrophes (phones autocorrect to these) so phrase
+  // matching works on real mobile input.
+  const s = ' ' + rawInput.toLowerCase().replace(/[''`]/g, "'").trim() + ' '
+  // Any request phrase present → it's a request, not a bare lookup.
+  for (const p of REQUEST_PHRASES) {
+    if (s.includes(p)) return true
+  }
+  // Question mark, or lots of words, also signals a request rather than a name.
+  if (rawInput.includes('?')) return true
+  const wordCount = rawInput.trim().split(/\s+/).length
+  if (wordCount >= 7) return true          // venue names are rarely this long
+  return false
+}
+
+router.get('/search', async (req, res, next) => {
+  try {
+    const raw = (req.query.q || req.query.search || '').toString().trim()
+    if (raw.length < 2) {
+      return res.json({ count: 0, venues: [], note: 'Type at least 2 characters to search.' })
+    }
+    const qNorm = normaliseName(raw)              // normalise the SAME way stored names are
+    if (!qNorm) return res.json({ count: 0, venues: [] })
+
+    const isRequest = looksLikeRequest(raw)
+    const city = req.query.city || null
+    const lat = req.query.lat ? parseFloat(req.query.lat) : null
+    const lng = req.query.lng ? parseFloat(req.query.lng) : null
+    const limit = Math.min(parseInt(req.query.limit || '15'), 50)
+
+    const params = [qNorm, `${qNorm}%`, `%${qNorm}%`]
+    let cityWhere = ''
+    if (city) { params.push(city); cityWhere = `AND city = $${params.length}` }
+
+    // Candidate set: anything with a trigram similarity above a low floor, OR a
+    // substring match (so short exact queries always surface). The trigram index
+    // on normalised_name makes similarity() fast.
+    const sql = `
+      SELECT id, name, category_slug, lat, lng, address, city, rating, rating_count,
+             price_level, cover_photo, photos, gem_tags,
+             normalised_name,
+             similarity(normalised_name, $1) AS sim,
+             (normalised_name = $1) AS exact_match,
+             (normalised_name LIKE $2) AS prefix_match,
+             (normalised_name LIKE $3) AS substr_match
+        FROM venues
+       WHERE business_status IS DISTINCT FROM 'CLOSED_PERMANENTLY'
+         AND (normalised_name % $1 OR normalised_name LIKE $3)
+         ${cityWhere}
+       LIMIT 200`
+    const { rows } = await query(sql, params)
+
+    // Rank in JS so we can blend the signals cleanly.
+    const scored = rows.map(v => {
+      let score = 0
+      if (v.exact_match) score += 100
+      if (v.prefix_match) score += 40
+      if (v.substr_match) score += 25
+      score += (Number(v.sim) || 0) * 30                       // fuzzy closeness (0..1 → 0..30)
+      // Quality tiebreaker: well-rated, well-reviewed places float up.
+      const rating = Number(v.rating) || 0
+      const reviews = Number(v.rating_count) || 0
+      if (reviews >= 20) score += Math.min((rating - 3.5) * 3, 6) + Math.min(reviews / 500, 4)
+      // Optional proximity nudge (never a filter): closer = a small bump.
+      let distance_m = null
+      if (lat != null && lng != null && v.lat != null && v.lng != null) {
+        distance_m = Math.round(distanceMeters(lat, lng, v.lat, v.lng))
+        score += Math.max(0, 6 - distance_m / 1000)            // up to +6 within ~6km
+      }
+      return { v, score, distance_m }
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+
+    const ranked = scored.map(({ v, score, distance_m }) => {
+      const { normalised_name, ...rest } = v
+      const out = repairVenuePhotos(rest)
+      if (distance_m != null) out.distance_m = distance_m
+      out._score = score
+      out._exact = v.exact_match || v.prefix_match
+      return out
+    })
+
+    // Auto-jump decision: take the user STRAIGHT to a venue only when we're
+    // confident it's a bare lookup of a specific place — i.e. NOT request-phrased
+    // ("somewhere like Sefton Park" must NOT auto-jump), and the top match is
+    // clearly ahead of the rest (a decisive winner, not a toss-up).
+    const top = ranked[0]
+    const second = ranked[1]
+    const decisiveLead = top && (!second || (top._score - second._score) >= 30)
+    const strongTop = top && (top._exact || top._score >= 90)
+    const autoJump = !isRequest && strongTop && decisiveLead
+
+    const venues = ranked.map(({ _score, _exact, ...v }) => v)   // strip internal fields
+
+    res.json({
+      count: venues.length,
+      query: raw,
+      // Frontend contract:
+      //  - autoJumpVenueId set → open this venue directly (bare lookup).
+      //  - looksLikeRequest true → this reads like a request; if the user is in
+      //    Search, offer an "Ask Sappo" handoff instead of just showing matches.
+      autoJumpVenueId: autoJump ? top.id : null,
+      looksLikeRequest: isRequest,
+      suggestAskSappo: isRequest || venues.length === 0,
+      venues,
+    })
+  } catch (err) { next(err) }
+})
+
 // GET /venues/list/trending?city=Liverpool — top venues (must be before /:id)
 router.get('/list/trending', async (req, res, next) => {
   try {
