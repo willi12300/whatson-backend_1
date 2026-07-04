@@ -11,6 +11,65 @@ function checkSecret(req, res, next) {
   next()
 }
 
+// GET /sync/audit-osm-categories?secret=...&city=Liverpool
+// READ-ONLY diagnostic. Finds venues likely mis-categorised by OSM's crowd-
+// sourced amenity tags (e.g. a corner shop tagged amenity=cafe). Flags venues
+// that are OSM-sourced, NOT verified by Google, AND whose name looks like a
+// shop/service rather than the category they're saved as. Changes nothing —
+// just reports, so you can see the scale before deciding on a fix.
+router.get('/audit-osm-categories', checkSecret, async (req, res, next) => {
+  try {
+    const city = req.query.city || null
+    // Names that strongly suggest a shop/service, not a cafe/restaurant/bar.
+    const SHOP_SIGNALS = [
+      'news', 'newsagent', 'off licence', 'off license', 'offie', 'food and wine',
+      'food & wine', 'convenience', 'mini market', 'minimarket', 'supermarket',
+      'express', 'local shop', 'corner shop', 'post office', 'pharmacy', 'chemist',
+      'launderette', 'laundrette', 'dry cleaner', 'barber', 'salon', 'hardware',
+      'petrol', 'garage', 'car wash', 'bookmakers', 'betting', 'vape', 'phone repair',
+      'pound', 'poundland', 'spar', 'costcutter', 'premier', 'nisa', 'londis', 'bargain',
+    ]
+
+    const params = []
+    let where = `EXISTS (SELECT 1 FROM venue_sources vs WHERE vs.venue_id = v.id AND vs.provider = 'osm')
+                 AND v.google_place_id IS NULL
+                 AND (v.rating IS NULL OR v.rating_count IS NULL OR v.rating_count = 0)`
+    if (city) { params.push(city); where += ` AND v.city = $${params.length}` }
+
+    const { rows } = await query(
+      `SELECT v.id, v.name, v.category_slug, v.city, v.rating, v.rating_count
+         FROM venues v
+        WHERE ${where}
+        ORDER BY v.category_slug, v.name
+        LIMIT 2000`,
+      params
+    )
+
+    // Flag by name signal.
+    const suspects = []
+    for (const v of rows) {
+      const n = (v.name || '').toLowerCase()
+      const hit = SHOP_SIGNALS.find(sig => n.includes(sig))
+      if (hit) suspects.push({ id: v.id, name: v.name, saved_as: v.category_slug, city: v.city, matched_signal: hit })
+    }
+
+    // Also count OSM-only unverified venues overall (context for how much of the
+    // DB is on the shaky source), grouped by category.
+    const byCat = {}
+    for (const v of rows) byCat[v.category_slug] = (byCat[v.category_slug] || 0) + 1
+
+    res.json({
+      mode: 'READ-ONLY audit (nothing changed)',
+      city: city || 'all',
+      osmUnverifiedVenues: rows.length,
+      osmUnverifiedByCategory: byCat,
+      likelyMiscategorised: suspects.length,
+      suspects: suspects.slice(0, 200),
+      note: 'These are OSM-sourced venues with no Google verification whose NAME suggests they are shops/services, not the category saved. Review before any fix. A safe fix is to re-run Google enrichment on these (it re-matches and corrects the category) or reclassify/hide the confirmed shops.',
+    })
+  } catch (err) { next(err) }
+})
+
 // Changed to GET so you can trigger it straight from the browser
 router.get('/liverpool', checkSecret, (req, res) => {
   res.json({ message: 'Liverpool sync started. Check /sync/status for progress.' })
