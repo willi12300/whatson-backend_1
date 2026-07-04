@@ -37,7 +37,7 @@ router.get('/audit-osm-categories', checkSecret, async (req, res, next) => {
     if (city) { params.push(city); where += ` AND v.city = $${params.length}` }
 
     const { rows } = await query(
-      `SELECT v.id, v.name, v.category_slug, v.city, v.rating, v.rating_count
+      `SELECT v.id, v.name, v.category_slug, v.city, v.rating, v.rating_count, v.google_status
          FROM venues v
         WHERE ${where}
         ORDER BY v.category_slug, v.name
@@ -53,19 +53,32 @@ router.get('/audit-osm-categories', checkSecret, async (req, res, next) => {
       if (hit) suspects.push({ id: v.id, name: v.name, saved_as: v.category_slug, city: v.city, matched_signal: hit })
     }
 
-    // Also count OSM-only unverified venues overall (context for how much of the
-    // DB is on the shaky source), grouped by category.
+    // Category breakdown.
     const byCat = {}
     for (const v of rows) byCat[v.category_slug] = (byCat[v.category_slug] || 0) + 1
+
+    // CRITICAL: has Google matching been ATTEMPTED on these? This decides whether
+    // re-enrichment will help. never_tried → re-enrich will match many of them.
+    // no_match → Google already couldn't find them (obscure/defunct); re-enrich
+    // won't help and these are the real "hide or accept" candidates.
+    const byStatus = { never_tried: 0, no_match: 0, error: 0, other: 0 }
+    for (const v of rows) {
+      const s = v.google_status
+      if (!s) byStatus.never_tried++
+      else if (s === 'no_match') byStatus.no_match++
+      else if (s === 'error') byStatus.error++
+      else byStatus.other++
+    }
 
     res.json({
       mode: 'READ-ONLY audit (nothing changed)',
       city: city || 'all',
       osmUnverifiedVenues: rows.length,
       osmUnverifiedByCategory: byCat,
+      googleMatchStatus: byStatus,
       likelyMiscategorised: suspects.length,
       suspects: suspects.slice(0, 200),
-      note: 'These are OSM-sourced venues with no Google verification whose NAME suggests they are shops/services, not the category saved. Review before any fix. A safe fix is to re-run Google enrichment on these (it re-matches and corrects the category) or reclassify/hide the confirmed shops.',
+      note: 'googleMatchStatus tells you the fix: never_tried venues will mostly be CORRECTED by running Google enrichment (it re-matches + fixes category/rating). no_match venues Google already failed to find (obscure/closed) — re-enrichment won\'t help those; decide to hide or accept them.',
     })
   } catch (err) { next(err) }
 })
