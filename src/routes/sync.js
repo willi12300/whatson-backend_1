@@ -112,34 +112,64 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
       params
     )
 
-    // Match within the selected set. Comparison is O(n²); run this PER CITY
-    // (pass &city=) — the pairwise scan is fine for one city's venues but would
-    // be slow across every city at once.
+    // Match within the selected set. Two tiers:
+    //  1. Same google_place_id → PROVABLY the same real place (Google's identity).
+    //     No distance/name check needed — this is bulletproof.
+    //  2. No shared place id → fall back to the name + distance heuristic, for
+    //     venues that aren't both enriched with a place id.
+    // Comparison is O(n²); run this PER CITY (pass &city=).
     const pairs = []
     const usedAsDupe = new Set()
     const arr = venues.slice().sort((a, b) => b.richness - a.richness)  // richest first = keepers
+
+    // ── Tier 1: exact Google Place ID matches ──
+    const byPlaceId = new Map()
+    for (const v of arr) {
+      if (!v.google_place_id) continue
+      if (!byPlaceId.has(v.google_place_id)) byPlaceId.set(v.google_place_id, [])
+      byPlaceId.get(v.google_place_id).push(v)
+    }
+    for (const [, group] of byPlaceId) {
+      if (group.length < 2) continue
+      const keeper = group[0]   // already richest-first
+      for (let k = 1; k < group.length; k++) {
+        const dupe = group[k]
+        if (usedAsDupe.has(dupe.id)) continue
+        const d = distanceMeters(keeper.lat, keeper.lng, dupe.lat, dupe.lng)
+        pairs.push({ keep: { id: keeper.id, name: keeper.name }, remove: { id: dupe.id, name: dupe.name }, metres: Math.round(d), nameSim: null, matchType: 'place_id' })
+        usedAsDupe.add(dupe.id)
+      }
+    }
+
+    // ── Tier 2: name + distance heuristic (for the rest) ──
     for (let i = 0; i < arr.length; i++) {
       const a = arr[i]
       if (usedAsDupe.has(a.id)) continue
       for (let j = i + 1; j < arr.length; j++) {
         const b = arr[j]
         if (usedAsDupe.has(b.id)) continue
+        // Skip pairs already decided by place id, and never merge two venues
+        // that have DIFFERENT known place ids (Google says they're different).
+        if (a.google_place_id && b.google_place_id && a.google_place_id !== b.google_place_id) continue
         const d = distanceMeters(a.lat, a.lng, b.lat, b.lng)
         if (d > maxMetres) continue
         const sim = jaroWinkler(normaliseName(a.name || ''), normaliseName(b.name || ''))
         if (sim >= minNameSim) {
-          pairs.push({ keep: { id: a.id, name: a.name }, remove: { id: b.id, name: b.name }, metres: Math.round(d), nameSim: +sim.toFixed(2) })
+          pairs.push({ keep: { id: a.id, name: a.name }, remove: { id: b.id, name: b.name }, metres: Math.round(d), nameSim: +sim.toFixed(2), matchType: 'name_distance' })
           usedAsDupe.add(b.id)   // b gets merged into a
         }
       }
     }
 
     if (!confirm) {
+      // Show all pairs by default on dry-run so you can review every merge
+      // before committing. Override with &sample=N to limit.
+      const sampleN = req.query.sample ? Math.max(1, parseInt(req.query.sample)) : pairs.length
       return res.json({
         mode: 'DRY RUN (nothing merged)',
         city: city || 'all',
         duplicatePairsFound: pairs.length,
-        sample: pairs.slice(0, 20),
+        sample: pairs.slice(0, sampleN),
         toMerge: 'Add &confirm=true to merge. The "keep" (richer) venue stays; "remove" is merged into it.',
       })
     }
