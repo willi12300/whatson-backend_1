@@ -214,17 +214,24 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
   const checked = venue.google_last_checked ? new Date(venue.google_last_checked) : (venue.profile_last_enriched ? new Date(venue.profile_last_enriched) : null)
   const googleReviews = asJson(venue.google_review_sample, [])
   const hasReviews = Array.isArray(googleReviews) && googleReviews.some(r => r?.text)
+  const hasPhotos = Array.isArray(asJson(venue.photos, [])) && asJson(venue.photos, []).length > 0
   // Opening hours barely change, so we refresh Google data at most monthly. This
   // matches the 30-day enrichment window used elsewhere and keeps Google calls
-  // to a minimum: a fully-enriched venue re-opened within the month is served
-  // straight from the DB with NO Google request. The ~monthly re-check still
-  // catches permanent closures and the rare hours change.
+  // to a minimum.
   const REFRESH_MS = 30 * 24 * 60 * 60 * 1000
-  const profileFresh = checked && (Date.now() - checked.getTime()) < REFRESH_MS
-  // A venue is "fully enriched" if we have a place id plus either reviews or a
-  // rating — enough to serve a rich profile without touching Google.
-  const fullyEnriched = venue.google_place_id && (hasReviews || venue.rating)
-  if (!force && profileFresh && fullyEnriched) return venue
+  // DATA-FIRST gate: if the venue already has the rich stuff (place id + reviews
+  // or rating, and photos), serve it straight from the DB with NO Google call —
+  // UNLESS it's due for its ~monthly refresh. We key "fully enriched" on the
+  // actual presence of data, not just a timestamp, so a missing/racey
+  // profile_last_enriched can never force a needless live call on a venue that
+  // clearly already has everything.
+  const fullyEnriched = venue.google_place_id && (hasReviews || venue.rating) && hasPhotos
+  const dueForRefresh = !checked || (Date.now() - checked.getTime()) >= REFRESH_MS
+  if (!force && fullyEnriched && !dueForRefresh) return venue
+  // Also serve enriched venues with a missing timestamp fast, and let the
+  // background intelligence write (in getVenueProfile) set the timestamp for
+  // next time — rather than blocking this open on a live Google call.
+  if (!force && fullyEnriched && !venue.google_last_checked && !venue.profile_last_enriched) return venue
 
   const debug = { queriesTried: [], method: null, placeId: null, status: 'started' }
   try {
@@ -429,9 +436,13 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
   // TripAdvisor is on-demand and cached, so the profile gets richer without blocking the whole app forever.
   venue = await maybeUpdateTripAdvisor(venue)
 
-  const eventsQ = await query(`SELECT id,name,description,image_url,category,genre,starts_at,ends_at,is_free,min_price,ticket_url FROM events WHERE venue_id=$1 AND status='active' AND starts_at>=now() ORDER BY starts_at ASC LIMIT 20`, [id])
-  const sourcesQ = await query(`SELECT provider,provider_id FROM venue_sources WHERE venue_id=$1`, [id])
-  const offersQ = await query(`SELECT id,title,description,discount_type,estimated_value,ends_at,redeem_url FROM offers WHERE venue_id=$1 AND active=TRUE AND (ends_at IS NULL OR ends_at>=now()) ORDER BY created_at DESC`, [id])
+  // These three are independent — run them in parallel rather than three
+  // sequential round-trips (a chunk of the perceived "loading" on every open).
+  const [eventsQ, sourcesQ, offersQ] = await Promise.all([
+    query(`SELECT id,name,description,image_url,category,genre,starts_at,ends_at,is_free,min_price,ticket_url FROM events WHERE venue_id=$1 AND status='active' AND starts_at>=now() ORDER BY starts_at ASC LIMIT 20`, [id]),
+    query(`SELECT provider,provider_id FROM venue_sources WHERE venue_id=$1`, [id]),
+    query(`SELECT id,title,description,discount_type,estimated_value,ends_at,redeem_url FROM offers WHERE venue_id=$1 AND active=TRUE AND (ends_at IS NULL OR ends_at>=now()) ORDER BY created_at DESC`, [id]),
+  ])
 
   const userLat = toNum(lat)
   const userLng = toNum(lng)
@@ -459,8 +470,10 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
   const mapsUrl = buildGoogleMapsUrl(venue)
   const tags = buildTags(venue)
 
-  // Persist lightweight profile intelligence for future calls.
-  await query(`
+  // Persist lightweight profile intelligence for future calls. Fire-and-forget
+  // — the user's response must NOT wait on this write (it was adding a DB
+  // round-trip to every single open, cached or not).
+  query(`
     UPDATE venues SET
       sappo_score=$1,
       why_chosen=$2,
