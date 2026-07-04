@@ -197,7 +197,16 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
       })
     }
 
-    let merged = 0
+    // Optional: &exclude=7191,7370,7116 skips specific "remove" venue IDs so you
+    // can merge everything EXCEPT a few pairs you want to review/keep separate.
+    const excludeIds = new Set(
+      String(req.query.exclude || '')
+        .split(',')
+        .map(s => parseInt(s.trim()))
+        .filter(n => Number.isFinite(n))
+    )
+
+    let merged = 0, skipped = 0
     // Fields worth preserving from a duplicate before we delete it. If the
     // keeper is missing any of these but the dupe has it, copy it across — so
     // "keep the richer one" becomes "keep the UNION of both" and we never throw
@@ -211,6 +220,7 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
       'instagram', 'facebook', 'menu_url', 'cuisine_type', 'price_range', 'average_spend_estimate',
     ]
     for (const p of pairs) {
+      if (excludeIds.has(p.remove.id)) { skipped++; continue }
       try {
         // Pull both rows so we can gap-fill the keeper from the dupe.
         const [keepRow, dupeRow] = await Promise.all([
@@ -239,8 +249,86 @@ router.get('/dedupe', checkSecret, async (req, res, next) => {
         merged++
       } catch (e) { logger.error('[dedupe] merge failed:', e.message) }
     }
-    logger.info(`[dedupe] merged ${merged} duplicate venues (city: ${city || 'all'})`)
-    return res.json({ mode: 'MERGED', city: city || 'all', merged, note: 'Richer venue kept; any fields it was missing were filled in from the duplicate before removal (non-destructive union merge).' })
+    logger.info(`[dedupe] merged ${merged} duplicate venues (city: ${city || 'all'}${skipped ? `, skipped ${skipped}` : ''})`)
+    return res.json({ mode: 'MERGED', city: city || 'all', merged, skipped, note: 'Richer venue kept; any fields it was missing were filled in from the duplicate before removal (non-destructive union merge).' })
+  } catch (err) { next(err) }
+})
+
+// GET /sync/reset-bad-place-ids?secret=...&city=Liverpool             → preview
+// GET /sync/reset-bad-place-ids?secret=...&city=Liverpool&confirm=true → apply
+//
+// Finds venues that SHARE a google_place_id with other venues that are far
+// away — i.e. different branches/places wrongly given the same id during
+// enrichment (e.g. 9 Costa branches all on one "Costa" id). For each such
+// group it KEEPS the id on the richest/most-central member and NULLs it on the
+// others, so the next enrichment re-matches them from name+address and lands on
+// the correct per-branch place. Nulling an id is safe: it just triggers a fresh
+// match. Dry-run by default.
+router.get('/reset-bad-place-ids', checkSecret, async (req, res, next) => {
+  try {
+    const { distanceMeters } = require('../utils/helpers')
+    const city = req.query.city || null
+    const confirm = req.query.confirm === 'true'
+    const maxMetres = parseInt(req.query.metres || '60')   // same "same-spot" bar as dedupe
+
+    const params = []
+    let where = "google_place_id IS NOT NULL AND lat IS NOT NULL AND lng IS NOT NULL"
+    if (city) { params.push(city); where += ` AND city = $${params.length}` }
+    const { rows } = await query(
+      `SELECT id, name, lat, lng, google_place_id, rating_count,
+              (CASE WHEN rating IS NOT NULL THEN 1 ELSE 0 END
+               + CASE WHEN cover_photo IS NOT NULL THEN 1 ELSE 0 END) AS richness
+         FROM venues WHERE ${where}`,
+      params
+    )
+
+    // Group by place id; a group is "bad" if any member is > maxMetres from the
+    // group's anchor (the richest member).
+    const groups = new Map()
+    for (const v of rows) {
+      if (!groups.has(v.google_place_id)) groups.set(v.google_place_id, [])
+      groups.get(v.google_place_id).push(v)
+    }
+
+    const toReset = []   // venues whose (wrong) id we will null
+    for (const [pid, members] of groups) {
+      if (members.length < 2) continue
+      members.sort((a, b) => (b.richness - a.richness) || ((b.rating_count || 0) - (a.rating_count || 0)))
+      const anchor = members[0]
+      const farApart = members.slice(1).some(m => distanceMeters(anchor.lat, anchor.lng, m.lat, m.lng) > maxMetres)
+      if (!farApart) continue   // all clustered = genuine, leave alone
+      // Keep the id on the anchor, reset it on everyone else in the group.
+      for (const m of members) {
+        if (m.id === anchor.id) continue
+        toReset.push({ id: m.id, name: m.name, google_place_id: pid, keptOn: { id: anchor.id, name: anchor.name } })
+      }
+    }
+
+    if (!confirm) {
+      return res.json({
+        mode: 'DRY RUN (nothing changed)',
+        city: city || 'all',
+        venuesToReset: toReset.length,
+        sample: toReset.slice(0, 100),
+        note: 'These venues share a place id with a far-away venue (wrong id). Add &confirm=true to NULL their google_place_id so the next enrichment re-matches them correctly. The richest member of each group keeps the id.',
+      })
+    }
+
+    let reset = 0
+    for (const r of toReset) {
+      // Null the wrong id + related google fields so enrichment does a fresh match.
+      await query(
+        `UPDATE venues SET google_place_id=NULL, google_last_checked=NULL, google_status='needs_rematch' WHERE id=$1`,
+        [r.id]
+      ).then(() => reset++).catch(e => logger.error('[reset-bad-place-ids] failed for ' + r.id + ': ' + e.message))
+    }
+    logger.info(`[reset-bad-place-ids] reset ${reset} venues (city: ${city || 'all'})`)
+    return res.json({
+      mode: 'RESET',
+      city: city || 'all',
+      reset,
+      note: 'Wrong place ids cleared. Now run enrich-google (repeat until scanned:0) to re-match these venues to their correct Google listing.',
+    })
   } catch (err) { next(err) }
 })
 
