@@ -11,12 +11,32 @@
 const express = require('express')
 const { query } = require('../db/pool')
 const { distanceMeters, repairPhotoUrl } = require('../utils/helpers')
+const { fetchVenues } = require('../clients/google')
 const { getTimeContext, timeOfDayNudge } = require('../services/timeContext')
 const logger = require('../utils/logger')
 
 const router = express.Router()
 
 // Filter → the venue category groups (and/or events) that belong to it.
+// Google Places type → our category slug (for live fallback normalisation)
+const GOOGLE_TYPE_TO_SLUG = {
+  restaurant: 'restaurant', cafe: 'cafe', coffee_shop: 'cafe', bakery: 'bakery',
+  bar: 'bar', pub: 'pub', night_club: 'nightclub', brewery: 'brewery',
+  tourist_attraction: 'tourist_attraction', museum: 'museum', art_gallery: 'art_gallery',
+  park: 'park', historical_landmark: 'landmark', church: 'church',
+  meal_takeaway: 'meal_takeaway', fast_food_restaurant: 'restaurant',
+  wine_bar: 'bar', cocktail_bar: 'bar',
+}
+// Google type → FILTER_GROUPS key (so filter chips work on live results too)
+const GOOGLE_TYPE_TO_GROUP = {
+  restaurant: 'food', cafe: 'cafe', coffee_shop: 'cafe', bakery: 'cafe',
+  bar: 'drinks', pub: 'drinks', wine_bar: 'drinks', cocktail_bar: 'drinks', brewery: 'drinks',
+  night_club: 'nightlife',
+  tourist_attraction: 'tourist', museum: 'tourist', art_gallery: 'tourist',
+  historical_landmark: 'tourist', church: 'tourist',
+  park: 'scenic',
+}
+
 const FILTER_GROUPS = {
   events:      { events: true, venueGroups: [] },
   coffee:      { events: false, venueGroups: ['cafe'] },
@@ -204,6 +224,63 @@ router.get('/discover', async (req, res, next) => {
             tags: [e.genre, eventSoon ? 'tonight' : null].filter(Boolean).map(t => String(t).toLowerCase()),
           },
         })
+      }
+    }
+
+    // ── Live Google fallback — fires only when DB has <5 results nearby ──────────
+    // Cost: ~16 Google API requests (one per place type). Only triggers in
+    // areas with no synced data. Results are normalised to the same pin shape
+    // so the frontend sees no difference.
+    const venuesFromDB = pins.filter(p => p.pin.type === 'venue').length
+    if (venuesFromDB < 5 && filter.venueGroups.length > 0) {
+      try {
+        logger.info(`[map] DB returned ${venuesFromDB} venues near ${lat.toFixed(3)},${lng.toFixed(3)} — falling back to live Google`)
+        const liveTypes = filter.venueGroups.flatMap(g => {
+          const typeMap = { food: ['restaurant','cafe','bakery'], cafe: ['cafe','coffee_shop'],
+            drinks: ['bar','pub','wine_bar'], tourist: ['tourist_attraction','museum','art_gallery','park','historical_landmark'],
+            scenic: ['park'], nightlife: ['night_club'] }
+          return typeMap[g] || []
+        })
+        const uniqueTypes = [...new Set(liveTypes)]
+        const liveVenues = await fetchVenues(lat, lng, radius, { types: uniqueTypes, parallel: true, timeoutMs: 8000 })
+        for (const v of liveVenues) {
+          const vLat = v.location?.latitude ?? v.lat
+          const vLng = v.location?.longitude ?? v.lng
+          if (vLat == null || vLng == null) continue
+          const dist = Math.round(distanceMeters(lat, lng, vLat, vLng))
+          if (dist > radius) continue
+          const rating = Number(v.rating) || 0
+          if (rating > 0 && rating < 3.4 && Number(v.ratingCount) >= 20) continue
+          const slug = GOOGLE_TYPE_TO_SLUG[v.primaryType] || v.primaryType || 'place'
+          const group = GOOGLE_TYPE_TO_GROUP[v.primaryType] || 'tourist'
+          // Skip if filter doesn't include this group (respect the active chip)
+          if (!filter.venueGroups.includes(group) && filterKey !== 'for_you') continue
+          const cover = repairPhotoUrl(v.photos?.[0]?.url || null)
+          const score = qualityRank(rating, v.ratingCount) + Math.max(0, 4 - dist / 1000)
+          pins.push({
+            _score: score,
+            pin: {
+              id: `g_${v.providerId || v.googlePlaceId || (vLat + ',' + vLng)}`,
+              venueId: null, type: 'venue', source: 'google_live',
+              name: v.name, category: venueCategoryLabel(slug),
+              latitude: vLat, longitude: vLng, imageUrl: cover,
+              rating: rating || null, distanceMeters: dist,
+              openNow: v.businessStatus === 'OPERATIONAL' ? true : null,
+              eventTime: null,
+              price: v.priceLevel != null ? '£'.repeat(Math.max(1, Number(v.priceLevel))) : null,
+              aiReason: pinReason({ tags: [], rating, openNow: null, isEvent: false, timeCtx, groups: new Set([group]) }),
+              bookingUrl: null, tags: [],
+              // Carry enough data so resolveVenueProfile can create a DB record on tap
+              _liveData: { name: v.name, address: v.address, lat: vLat, lng: vLng,
+                googlePlaceId: v.googlePlaceId || v.providerId, category: slug,
+                rating, ratingCount: v.ratingCount, phone: v.phone, website: v.website,
+                photos: v.photos || [], priceLevel: v.priceLevel }
+            },
+          })
+        }
+        logger.info(`[map] live Google added ${liveVenues.length} venues → total pins: ${pins.length}`)
+      } catch (e) {
+        logger.error('[map] live Google fallback failed:', e.message)
       }
     }
 

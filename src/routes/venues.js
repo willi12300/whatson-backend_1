@@ -272,6 +272,48 @@ router.get('/', async (req, res, next) => {
         .filter(v => v.distance_m <= radius)
         .sort((a, b) => a.distance_m - b.distance_m)
     }
+
+    // Live Google fallback — fires only when GPS is provided and DB has <5 results
+    // nearby (i.e. unsynced area). Normalises to the same shape as DB rows so the
+    // frontend (useCityData / Home Near You) sees no difference.
+    if (lat && lng && result.length < 5 && !search && !category) {
+      try {
+        const { fetchVenues: googleFetch } = require('../clients/google')
+        const fLat = parseFloat(lat), fLng = parseFloat(lng), fRadius = parseInt(radius)
+        logger.info(`[venues] DB returned ${result.length} nearby — live Google fallback at ${fLat.toFixed(3)},${fLng.toFixed(3)}`)
+        const live = await googleFetch(fLat, fLng, fRadius, { parallel: true, timeoutMs: 8000 })
+        const existing = new Set(result.map(v => v.name.toLowerCase().trim()))
+        const extra = live
+          .filter(v => {
+            const vLat = v.location?.latitude ?? v.lat
+            const vLng = v.location?.longitude ?? v.lng
+            if (vLat == null || vLng == null) return false
+            if (existing.has((v.name || '').toLowerCase().trim())) return false
+            return Math.round(distanceMeters(fLat, fLng, vLat, vLng)) <= fRadius
+          })
+          .map(v => {
+            const vLat = v.location?.latitude ?? v.lat
+            const vLng = v.location?.longitude ?? v.lng
+            return {
+              id: `g_${v.providerId || v.googlePlaceId || vLat}`,
+              name: v.name, category_slug: v.primaryType || 'place',
+              lat: vLat, lng: vLng, address: v.address,
+              city: city || null, rating: v.rating || null, rating_count: v.ratingCount || null,
+              price_level: v.priceLevel || null, cover_photo: v.photos?.[0]?.url || null,
+              photos: JSON.stringify(v.photos || []),
+              opening_hours: null, business_status: v.businessStatus || null,
+              distance_m: Math.round(distanceMeters(fLat, fLng, vLat, vLng)),
+              phone: v.phone || null, website: v.website || null,
+              _source: 'google_live',
+            }
+          })
+        result = [...result, ...extra].sort((a, b) => (a.distance_m || 0) - (b.distance_m || 0))
+        logger.info(`[venues] live Google added ${extra.length} venues → total: ${result.length}`)
+      } catch (e) {
+        logger.error('[venues] live Google fallback failed:', e.message)
+      }
+    }
+
     res.json({ count: result.length, venues: result.map(v => repairVenuePhotos(v)) })
   } catch (err) { next(err) }
 })
@@ -608,52 +650,6 @@ router.post('/admin/sync-tripadvisor', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
-// GET /venues/retry-errored-google?secret=...&city=Liverpool&limit=50
-// Re-run Google enrichment on venues whose last attempt ERRORED (google_status
-// ='error'). These were never actually matched — the enrichment call failed
-// (e.g. bad key / quota / outage at the time) and got parked. They have a fresh
-// timestamp from the failure, so the normal enrich endpoint SKIPS them; this
-// bypasses that. Repeat until scanned:0. Uses Google calls (one per venue), but
-// only on the errored set, not the whole city.
-router.get('/retry-errored-google', async (req, res, next) => {
-  try {
-    if ((req.query.secret || '') !== process.env.SYNC_SECRET) {
-      return res.status(403).json({ error: 'Bad or missing secret' })
-    }
-    const city = req.query.city || null
-    const limit = Math.min(parseInt(req.query.limit || '50'), 100)
-    const params = [`error`]
-    let where = `google_status = $1`
-    if (city) { params.push(city); where += ` AND city = $${params.length}` }
-    const { rows } = await query(
-      `SELECT id, name, category_slug FROM venues WHERE ${where} ORDER BY id LIMIT ${limit}`, params
-    )
-    let fixed = 0, stillNoMatch = 0, stillError = 0
-    const changes = []
-    for (const v of rows) {
-      try {
-        const result = await syncGoogleForVenue(v.id, { force: true })
-        const status = result?.status || result?.google_status
-        if (status === 'synced' || result?.matched) {
-          fixed++
-          if (changes.length < 30) changes.push({ id: v.id, name: v.name, was: v.category_slug, now: result.category_slug || result.category || '(updated)' })
-        } else if (status === 'no_match') stillNoMatch++
-        else stillError++
-      } catch (e) { stillError++; logger.warn('[retry-errored] ' + v.id + ': ' + e.message) }
-    }
-    res.json({
-      mode: 'RETRY errored Google enrichment',
-      city: city || 'all',
-      scanned: rows.length,
-      fixed,
-      stillNoMatch,
-      stillError,
-      sampleChanges: changes,
-      note: 'Repeat until scanned:0. "fixed" = now matched to Google (category/rating corrected). "stillNoMatch" = Google genuinely can\'t find them (obscure/closed). "stillError" = failed again (check API key/quota).',
-    })
-  } catch (err) { next(err) }
-})
-
 // GET /venues/derive-gem-tags?secret=...&city=Liverpool&limit=50
 // Backfill gem tags from review text ALREADY stored on venues (no new API
 // calls, no Google billing). Run repeatedly until "scanned" reaches 0.
@@ -806,20 +802,37 @@ router.get('/test-tripadvisor', async (req, res) => {
   }
 })
 
+// Background re-sync: if profile_last_enriched is stale (>48h), refresh Google+TripAdvisor
+// data without blocking the response. The NEXT tap gets the fresh data.
+const STALE_MS = 48 * 60 * 60 * 1000
+function triggerBackgroundSync(id, profile) {
+  try {
+    const lastEnriched = profile && (profile.profile_last_enriched || profile.updated_at)
+    const stale = !lastEnriched || (Date.now() - new Date(lastEnriched).getTime()) > STALE_MS
+    if (!stale) return
+    Promise.all([
+      syncGoogleForVenue(id, { force: false }).catch(() => {}),
+      syncTripAdvisorForVenue(id, { force: false }).catch(() => {}),
+    ]).catch(() => {})
+  } catch (_) {}
+}
+
 // GET /venues/:id/profile?lat=&lng= — enriched profile for the SAPPO venue profile UX.
-router.get('/:id/profile', async (req, res, next) => {
+router.get("/:id/profile", async (req, res, next) => {
   try {
     const profile = await getVenueProfile(req.params.id, { lat: req.query.lat, lng: req.query.lng })
-    if (!profile) return res.status(404).json({ error: 'Venue not found' })
+    if (!profile) return res.status(404).json({ error: "Venue not found" })
     res.json(profile)
+    triggerBackgroundSync(req.params.id, profile)
   } catch (err) { next(err) }
 })
 
-router.get('/:id', async (req, res, next) => {
+router.get("/:id", async (req, res, next) => {
   try {
     const profile = await getVenueProfile(req.params.id, { lat: req.query.lat, lng: req.query.lng })
-    if (!profile) return res.status(404).json({ error: 'Venue not found' })
+    if (!profile) return res.status(404).json({ error: "Venue not found" })
     res.json(profile)
+    triggerBackgroundSync(req.params.id, profile)
   } catch (err) { next(err) }
 })
 
