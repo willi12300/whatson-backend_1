@@ -273,44 +273,63 @@ router.get('/', async (req, res, next) => {
         .sort((a, b) => a.distance_m - b.distance_m)
     }
 
-    // Live Google fallback — fires only when GPS is provided and DB has <5 results
-    // nearby (i.e. unsynced area). Normalises to the same shape as DB rows so the
-    // frontend (useCityData / Home Near You) sees no difference.
+    // Live Google fallback — fires when GPS present and DB has <5 nearby results.
+    // Saves to DB via upsertVenue so venues persist, enrich, and appear everywhere.
     if (lat && lng && result.length < 5 && !search && !category) {
       try {
         const { fetchVenues: googleFetch } = require('../clients/google')
         const fLat = parseFloat(lat), fLng = parseFloat(lng), fRadius = parseInt(radius)
-        logger.info(`[venues] DB returned ${result.length} nearby — live Google fallback at ${fLat.toFixed(3)},${fLng.toFixed(3)}`)
-        const live = await googleFetch(fLat, fLng, fRadius, { parallel: true, timeoutMs: 8000 })
-        const existing = new Set(result.map(v => v.name.toLowerCase().trim()))
-        const extra = live
-          .filter(v => {
-            const vLat = v.location?.latitude ?? v.lat
-            const vLng = v.location?.longitude ?? v.lng
-            if (vLat == null || vLng == null) return false
-            if (existing.has((v.name || '').toLowerCase().trim())) return false
-            return Math.round(distanceMeters(fLat, fLng, vLat, vLng)) <= fRadius
-          })
-          .map(v => {
-            const vLat = v.location?.latitude ?? v.lat
-            const vLng = v.location?.longitude ?? v.lng
-            return {
-              id: `g_${v.providerId || v.googlePlaceId || vLat}`,
-              name: v.name, category_slug: v.primaryType || 'place',
-              lat: vLat, lng: vLng, address: v.address,
-              city: city || null, rating: v.rating || null, rating_count: v.ratingCount || null,
-              price_level: v.priceLevel || null, cover_photo: v.photos?.[0]?.url || null,
+        const cityLabel = city || 'nearby'
+        logger.info('[venues] DB:' + result.length + ' near ' + fLat.toFixed(3) + ',' + fLng.toFixed(3) + ' - live Google fetch')
+        const live = await googleFetch(fLat, fLng, fRadius, { parallel: true, timeoutMs: 10000 })
+        const existingNames = new Set(result.map(v => (v.name || '').toLowerCase().trim()))
+        const toSave = live.filter(v => {
+          const vLat = v.location ? v.location.latitude : v.lat
+          const vLng = v.location ? v.location.longitude : v.lng
+          if (vLat == null || vLng == null) return false
+          if (existingNames.has((v.name || '').toLowerCase().trim())) return false
+          return Math.round(distanceMeters(fLat, fLng, vLat, vLng)) <= fRadius
+        })
+        logger.info('[venues] ' + live.length + ' live, ' + toSave.length + ' new to save')
+        const savedRows = []
+        await Promise.all(toSave.map(async function(v) {
+          try {
+            const vLat = v.location ? v.location.latitude : v.lat
+            const vLng = v.location ? v.location.longitude : v.lng
+            const normName = normaliseName(v.name || '')
+            const saved = await upsertVenue({
+              name: v.name, normalisedName: normName,
+              category: v.primaryType || 'place',
+              lat: vLat, lng: vLng, address: v.address || null, postcode: null,
+              phone: v.phone || null, website: v.website || null,
+              rating: v.rating || null, ratingCount: v.ratingCount || null,
+              priceLevel: v.priceLevel || null,
+              openingHours: v.regularOpeningHours || v.currentOpeningHours || null,
+              businessStatus: v.businessStatus || null,
+              photos: v.photos || [],
+              coverPhoto: (v.photos && v.photos[0]) ? v.photos[0].url : null,
+              googlePlaceId: v.providerId || v.googlePlaceId || null,
+              sources: [{ provider: 'google', providerId: v.providerId || v.googlePlaceId || null, raw: v }],
+            }, cityLabel)
+            savedRows.push({
+              id: saved.id, name: v.name, category_slug: v.primaryType || 'place',
+              lat: vLat, lng: vLng, address: v.address || null, city: cityLabel,
+              rating: v.rating || null, rating_count: v.ratingCount || null,
+              price_level: v.priceLevel || null,
+              cover_photo: (v.photos && v.photos[0]) ? v.photos[0].url : null,
               photos: JSON.stringify(v.photos || []),
               opening_hours: null, business_status: v.businessStatus || null,
               distance_m: Math.round(distanceMeters(fLat, fLng, vLat, vLng)),
               phone: v.phone || null, website: v.website || null,
-              _source: 'google_live',
-            }
-          })
-        result = [...result, ...extra].sort((a, b) => (a.distance_m || 0) - (b.distance_m || 0))
-        logger.info(`[venues] live Google added ${extra.length} venues → total: ${result.length}`)
+            })
+          } catch (err) {
+            logger.error('[venues] upsert failed for ' + (v.name || '?') + ': ' + err.message)
+          }
+        }))
+        result = result.concat(savedRows).sort(function(a, b) { return (a.distance_m || 0) - (b.distance_m || 0) })
+        logger.info('[venues] total: ' + result.length + ' (' + savedRows.length + ' saved to DB)')
       } catch (e) {
-        logger.error('[venues] live Google fallback failed:', e.message)
+        logger.error('[venues] live fallback failed: ' + e.message)
       }
     }
 
