@@ -1,7 +1,9 @@
 // src/routes/syncGrid.js
-// Geographic grid sync — tiles a bounding box with overlapping circles.
-// For rural/landscape areas where city-point presets miss villages.
-// Also provides a large-radius event sweep endpoint for Skiddle/TM/EB.
+// Geographic grid sync with three passes:
+//   venues  — restaurants, pubs, cafés, museums etc.
+//   outdoor — hiking areas, campsites, natural features
+//   text    — waterfalls, viewpoints, wild swimming, summits, gorges, trails
+//             (things Google type-search can't find by type alone)
 const express = require('express')
 const router = express.Router()
 const { config } = require('../config')
@@ -17,27 +19,48 @@ function checkSecret(req, res, next) {
   next()
 }
 
+// The 6 text queries that type-based search completely misses.
+// Deliberately lean — pubs/cafés/campsites are covered by type passes.
+const OUTDOOR_TEXT_QUERIES = [
+  'waterfall',
+  'viewpoint scenic',
+  'wild swimming',
+  'walking trail',
+  'mountain summit',
+  'gorge',
+]
+
 const REGIONS = {
-  wales: {
-    name: 'Wales',
-    north: 53.45, south: 51.35, west: -5.35, east: -2.65,
-    tileSpacingKm: 10, tileRadiusM: 8000,
-    label: 'Full Wales — all towns, villages, national parks',
-    types: ['restaurant','cafe','bar','pub','tourist_attraction','park','historical_landmark','museum'],
-  },
-  north_wales: {
-    name: 'North Wales',
-    north: 53.45, south: 52.55, west: -4.75, east: -2.90,
+  // Aberystwyth → Liverpool/Chester/Wirral — the full area Will is covering.
+  // GPS determines local relevance; region is just a sync boundary.
+  main: {
+    name: 'Main Region',
+    north: 53.45, south: 52.40, west: -5.35, east: -2.65,
     tileSpacingKm: 7, tileRadiusM: 6000,
-    label: 'Anglesey to Llangollen, Snowdonia to coast',
-    types: ['restaurant','cafe','bar','pub','tourist_attraction','park','historical_landmark','museum','art_gallery','church'],
+    label: 'Aberystwyth to Liverpool, Chester & Wirral — full coverage',
+    types: [
+      'restaurant', 'cafe', 'bar', 'pub',
+      'tourist_attraction', 'museum', 'art_gallery', 'park',
+      'historical_landmark', 'church',
+    ],
+    outdoorTypes: [
+      'hiking_area', 'campground', 'natural_feature',
+      'visitor_center', 'rv_park',
+    ],
+    textQueries: OUTDOOR_TEXT_QUERIES,
   },
-  mid_wales: {
-    name: 'Mid Wales',
-    north: 52.80, south: 51.80, west: -4.80, east: -3.00,
-    tileSpacingKm: 10, tileRadiusM: 8000,
-    label: 'Dolgellau, Machynlleth, Aberystwyth, Brecon',
-    types: ['restaurant','cafe','bar','pub','tourist_attraction','park','historical_landmark','museum'],
+  // Tight 5km grid just around Dolgellau — run this first for immediate local coverage
+  dolgellau: {
+    name: 'Dolgellau Area',
+    north: 52.92, south: 52.55, west: -4.25, east: -3.45,
+    tileSpacingKm: 5, tileRadiusM: 5000,
+    label: 'Dolgellau, Cadair Idris, Barmouth, Llwyngwril — tight 5km grid',
+    types: [
+      'restaurant', 'cafe', 'bar', 'pub',
+      'tourist_attraction', 'museum', 'park', 'historical_landmark',
+    ],
+    outdoorTypes: ['hiking_area', 'campground', 'natural_feature', 'visitor_center'],
+    textQueries: OUTDOOR_TEXT_QUERIES,
   },
 }
 
@@ -50,7 +73,10 @@ function buildTileGrid(region) {
   const tiles = []
   for (let lat = region.south + spacingLat / 2; lat < region.north; lat += spacingLat) {
     for (let lng = region.west + spacingLng / 2; lng < region.east; lng += spacingLng) {
-      tiles.push({ lat: Math.round(lat * 100000) / 100000, lng: Math.round(lng * 100000) / 100000 })
+      tiles.push({
+        lat: Math.round(lat * 100000) / 100000,
+        lng: Math.round(lng * 100000) / 100000,
+      })
     }
   }
   return tiles
@@ -60,94 +86,127 @@ function normaliseName(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/ +/g, ' ').trim()
 }
 
-// In-memory state — Railway keeps the process alive during a sync
+async function saveVenue(v, regionName) {
+  try {
+    const vLat = (v.location && v.location.latitude != null) ? v.location.latitude : v.lat
+    const vLng = (v.location && v.location.longitude != null) ? v.location.longitude : v.lng
+    if (!vLat || !vLng || !v.name) return null
+    return await upsertVenue({
+      name: v.name,
+      normalisedName: normaliseName(v.name),
+      category: v.primaryType || 'place',
+      lat: vLat, lng: vLng,
+      address: v.address || null, postcode: null,
+      phone: v.phone || null, website: v.website || null,
+      rating: v.rating || null, ratingCount: v.ratingCount || null,
+      priceLevel: v.priceLevel || null,
+      openingHours: v.regularOpeningHours || v.currentOpeningHours || v.openingHours || null,
+      businessStatus: v.businessStatus || null,
+      photos: v.photos || [],
+      coverPhoto: (v.photos && v.photos[0]) ? v.photos[0].url : null,
+      googlePlaceId: v.providerId || v.googlePlaceId || null,
+      sources: [{ provider: 'google', providerId: v.providerId || v.googlePlaceId || null, raw: v }],
+    }, regionName)
+  } catch (e) {
+    logger.error('[grid] upsert failed for ' + (v.name || '?') + ': ' + e.message)
+    return null
+  }
+}
+
 const syncState = {}
 
 // GET /sync-grid/status
-router.get('/status', checkSecret, (req, res) => {
-  res.json(syncState)
-})
+router.get('/status', checkSecret, (req, res) => res.json(syncState))
 
-// GET /sync-grid/preview?region=wales — cost estimate before running
+// GET /sync-grid/preview?region=main&pass=text
 router.get('/preview', checkSecret, (req, res) => {
-  const regionKey = (req.query.region || 'wales').toLowerCase()
+  const regionKey = (req.query.region || 'main').toLowerCase()
   const region = REGIONS[regionKey]
-  if (!region) return res.status(400).json({ error: 'Unknown region. Available: ' + Object.keys(REGIONS).join(', ') })
+  if (!region) return res.status(400).json({ error: 'Unknown region. Options: ' + Object.keys(REGIONS).join(', ') })
+  const pass = req.query.pass || 'venues'
   const tiles = buildTileGrid(region)
-  const totalRequests = tiles.length * region.types.length
-  const costUSD = (totalRequests * 0.032).toFixed(2)
+  const types = pass === 'outdoor' ? region.outdoorTypes
+    : pass === 'text' ? region.textQueries
+    : region.types
+  const totalRequests = tiles.length * types.length
   res.json({
-    region: regionKey, label: region.label,
-    tiles: tiles.length, types: region.types.length,
-    totalRequests, estimatedCostUSD: costUSD,
-    tileSpacingKm: region.tileSpacingKm, tileRadiusM: region.tileRadiusM,
-    sampleTiles: tiles.slice(0, 5),
-    message: 'Estimated ' + totalRequests + ' requests = $' + costUSD + '. Run /sync-grid/run?region=' + regionKey + ' to start.',
+    region: regionKey, pass, label: region.label,
+    tiles: tiles.length, types, typeCount: types.length,
+    totalRequests,
+    estimatedCostUSD: (totalRequests * 0.032).toFixed(2),
+    bounds: { north: region.north, south: region.south, west: region.west, east: region.east },
+    resumeUrl: '/sync-grid/run?region=' + regionKey + '&pass=' + pass + '&start=N',
+    message: 'Run /sync-grid/run?region=' + regionKey + '&pass=' + pass + ' to start.',
   })
 })
 
-// GET /sync-grid/run?region=wales&start=0
-// ?start= lets you resume from a tile index if Railway interrupted it
+// GET /sync-grid/run?region=main&pass=venues&start=0
 router.get('/run', checkSecret, async (req, res) => {
-  const regionKey = (req.query.region || 'wales').toLowerCase()
+  const regionKey = (req.query.region || 'main').toLowerCase()
   const region = REGIONS[regionKey]
-  if (!region) return res.status(400).json({ error: 'Unknown region. Available: ' + Object.keys(REGIONS).join(', ') })
-  if (syncState[regionKey] && syncState[regionKey].running) {
-    return res.json({ message: 'Already running', state: syncState[regionKey] })
+  if (!region) return res.status(400).json({ error: 'Unknown region. Options: ' + Object.keys(REGIONS).join(', ') })
+  const pass = req.query.pass || 'venues'
+  const stateKey = regionKey + '_' + pass
+  if (syncState[stateKey] && syncState[stateKey].running) {
+    return res.json({ message: 'Already running', state: syncState[stateKey] })
   }
   const tiles = buildTileGrid(region)
   const startIdx = Math.max(0, parseInt(req.query.start || '0'))
-  syncState[regionKey] = {
-    running: true, region: regionKey, label: region.label,
+  const types = pass === 'outdoor' ? region.outdoorTypes
+    : pass === 'text' ? region.textQueries
+    : region.types
+  if (!types || !types.length) return res.status(400).json({ error: 'No types/queries for pass: ' + pass })
+
+  syncState[stateKey] = {
+    running: true, region: regionKey, pass, label: region.label,
     total: tiles.length, done: startIdx, added: 0, updated: 0, errors: 0,
     startedAt: new Date().toISOString(), lastTile: null,
   }
+  const state = syncState[stateKey]
+  const cost = (tiles.length * types.length * 0.032).toFixed(2)
+
   res.json({
-    message: 'Grid sync started for ' + region.label + '. ' + (tiles.length - startIdx) + ' tiles to process.',
-    state: syncState[regionKey], statusUrl: '/sync-grid/status',
+    message: 'Started: ' + region.label + ' / ' + pass + ' pass. '
+      + (tiles.length - startIdx) + ' tiles, '
+      + types.length + ' ' + (pass === 'text' ? 'queries' : 'types') + ' each.',
+    estimatedCostUSD: cost, state,
+    statusUrl: '/sync-grid/status',
+    resumeUrl: '/sync-grid/run?region=' + regionKey + '&pass=' + pass + '&start=N',
   })
 
-  const state = syncState[regionKey]
   ;(async () => {
     for (let i = startIdx; i < tiles.length; i++) {
       const tile = tiles[i]
       state.done = i; state.lastTile = tile
       try {
-        const venues = await google.fetchVenues(tile.lat, tile.lng, region.tileRadiusM, {
-          types: region.types, parallel: false, timeoutMs: 12000,
-        })
-        for (const v of venues) {
-          try {
-            const vLat = (v.location && v.location.latitude != null) ? v.location.latitude : v.lat
-            const vLng = (v.location && v.location.longitude != null) ? v.location.longitude : v.lng
-            if (vLat == null || vLng == null) continue
-            const result = await upsertVenue({
-              name: v.name,
-              normalisedName: normaliseName(v.name),
-              category: v.primaryType || v.category || 'place',
-              lat: vLat, lng: vLng,
-              address: v.address, postcode: null,
-              phone: v.phone || null,
-              website: v.website || null,
-              rating: v.rating || null,
-              ratingCount: v.ratingCount || null,
-              priceLevel: v.priceLevel || null,
-              openingHours: v.regularOpeningHours || v.currentOpeningHours || null,
-              businessStatus: v.businessStatus || null,
-              photos: v.photos || [],
-              coverPhoto: (v.photos && v.photos[0]) ? v.photos[0].url : null,
-              googlePlaceId: v.providerId || v.googlePlaceId || null,
-              sources: [{ provider: 'google', providerId: v.providerId || v.googlePlaceId || null, raw: v }],
-            }, region.name)
-            if (result.isNew) state.added++; else state.updated++
-          } catch (e) {
-            state.errors++
+        let venues = []
+        if (pass === 'text') {
+          for (const q of types) {
+            const results = await google.searchTextPlaces(
+              q, tile.lat, tile.lng, region.tileRadiusM,
+              { timeoutMs: 10000, maxResultCount: 20 }
+            )
+            venues = venues.concat(results)
+            await new Promise(function(r) { setTimeout(r, 200) })
           }
+        } else {
+          venues = await google.fetchVenues(tile.lat, tile.lng, region.tileRadiusM, {
+            types, parallel: false, timeoutMs: 12000,
+          })
         }
-        // 350ms between tiles — safe within Google quota
+        // Dedupe within tile by Google Place ID
+        const seen = new Set()
+        for (const v of venues) {
+          const id = v.providerId || v.googlePlaceId
+          if (id && seen.has(id)) continue
+          if (id) seen.add(id)
+          const result = await saveVenue(v, region.name)
+          if (result) { if (result.isNew) state.added++; else state.updated++ }
+          else state.errors++
+        }
         await new Promise(function(r) { setTimeout(r, 350) })
       } catch (e) {
-        logger.error('[grid-sync] tile ' + i + ' (' + tile.lat + ',' + tile.lng + ') failed: ' + e.message)
+        logger.error('[grid] tile ' + i + ' (' + tile.lat + ',' + tile.lng + ') ' + pass + ' failed: ' + e.message)
         state.errors++
         await new Promise(function(r) { setTimeout(r, 2000) })
       }
@@ -155,53 +214,102 @@ router.get('/run', checkSecret, async (req, res) => {
     state.running = false
     state.done = tiles.length
     state.finishedAt = new Date().toISOString()
-    logger.info('[grid-sync] ' + regionKey + ' complete: ' + state.added + ' added, ' + state.updated + ' updated, ' + state.errors + ' errors')
+    logger.info('[grid] ' + stateKey + ' done: +'
+      + state.added + ' new, ' + state.updated + ' updated, ' + state.errors + ' errors')
   })()
 })
 
-// GET /sync-grid/events?lat=52.74&lng=-3.88&radius=40
-// Single large-radius sweep for events — covers all of Wales from one point.
-// Run weekly, or when you move to a new area. No cost (Skiddle/TM/EB are free APIs).
-router.get('/events', checkSecret, async (req, res) => {
-  const lat = parseFloat(req.query.lat)
-  const lng = parseFloat(req.query.lng)
-  const radiusMiles = Math.min(parseInt(req.query.radius || '40'), 100)
-  const cityLabel = req.query.city || 'Wales'
-  if (!lat || !lng) return res.status(400).json({ error: 'lat and lng required. Example: ?lat=52.74&lng=-3.88&radius=40' })
+// GET /sync-grid/enrich?limit=200
+router.get('/enrich', checkSecret, async (req, res, next) => {
+  try {
+    const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
+    const limit = Math.min(parseInt(req.query.limit || '200'), 500)
+    const city = req.query.city || null
+    const params = city ? [limit, city] : [limit]
+    const cityClause = city ? 'AND city = $2 ' : ''
+    const { rows } = await query(
+      "SELECT id, name FROM venues WHERE (profile_last_enriched IS NULL OR enrichment_status IS DISTINCT FROM 'done') "
+      + cityClause + 'ORDER BY rating_count DESC NULLS LAST, created_at DESC LIMIT $1',
+      params
+    )
+    let queued = 0
+    for (const v of rows) if (scheduleVenueEnrichment(v.id, 'reenrich')) queued++
+    res.json({
+      queued, scanned: rows.length,
+      etaMins: Math.round(queued * 2.5 / 60),
+      queue: getQueueStatus(),
+    })
+  } catch (err) { next(err) }
+})
 
+// GET /sync-grid/enrich-status
+router.get('/enrich-status', checkSecret, async (req, res, next) => {
+  try {
+    const { getQueueStatus } = require('../services/backgroundEnrichment')
+    const { rows } = await query(
+      "SELECT COUNT(*) total, "
+      + "COUNT(*) FILTER (WHERE profile_last_enriched IS NOT NULL) enriched, "
+      + "COUNT(*) FILTER (WHERE profile_last_enriched IS NULL) unenriched "
+      + "FROM venues"
+    )
+    res.json({ db: rows[0], queue: getQueueStatus() })
+  } catch (err) { next(err) }
+})
+
+// GET /sync-grid/coverage?lat=52.74&lng=-3.88
+router.get('/coverage', checkSecret, async (req, res, next) => {
+  try {
+    const lat = parseFloat(req.query.lat || 52.7447)
+    const lng = parseFloat(req.query.lng || -3.8853)
+    const counts = {}
+    for (const km of [2, 5, 10, 20, 35]) {
+      const { rows } = await query(
+        'SELECT COUNT(*) c FROM venues WHERE '
+        + '(6371 * acos(LEAST(1.0, cos(radians($1)) * cos(radians(lat)) '
+        + '* cos(radians(lng) - radians($2)) + sin(radians($1)) * sin(radians(lat))))) < $3',
+        [lat, lng, km]
+      )
+      counts[km + 'km'] = parseInt(rows[0].c)
+    }
+    const { rows: nearest } = await query(
+      'SELECT name, city, lat, lng, enrichment_status, '
+      + 'profile_last_enriched IS NOT NULL as enriched, '
+      + 'ROUND((6371 * acos(LEAST(1.0, cos(radians($1)) * cos(radians(lat)) '
+      + '* cos(radians(lng) - radians($2)) + sin(radians($1)) * sin(radians(lat)))))::numeric, 2) dist_km '
+      + 'FROM venues ORDER BY dist_km ASC LIMIT 20',
+      [lat, lng]
+    )
+    res.json({ centre: { lat, lng }, counts, nearest20: nearest })
+  } catch (err) { next(err) }
+})
+
+// GET /sync-grid/events?lat=52.74&lng=-3.88&radius=40
+router.get('/events', checkSecret, async (req, res) => {
+  const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng)
+  const radiusMiles = Math.min(parseInt(req.query.radius || '40'), 100)
+  const cityLabel = req.query.city || 'region'
+  if (!lat || !lng) return res.status(400).json({ error: 'lat and lng required' })
   syncState.events = {
-    running: true, lat: lat, lng: lng, radiusMiles: radiusMiles,
+    running: true, lat, lng, radiusMiles,
     added: 0, updated: 0, errors: 0, startedAt: new Date().toISOString(),
   }
-  res.json({
-    message: 'Fetching events within ' + radiusMiles + ' miles from Skiddle, Ticketmaster & Eventbrite. No API cost.',
-    state: syncState.events, statusUrl: '/sync-grid/status',
-  })
-
+  res.json({ message: 'Fetching events within ' + radiusMiles + ' miles.', state: syncState.events })
   const state = syncState.events
   ;(async () => {
     try {
       const { matchEventToVenue } = require('../services/matchEvents')
       const ticketmaster = require('../clients/ticketmaster')
       const eventbrite = require('../clients/eventbrite')
-
       const results = await Promise.all([
-        skiddle.fetchEvents(lat, lng, radiusMiles, 60, { maxResults: 500, timeoutMs: 20000 }).catch(function(e) {
-          logger.error('[grid-events] skiddle failed: ' + e.message); return []
-        }),
-        ticketmaster.fetchEvents(lat, lng, radiusMiles, 60, { maxResults: 300, maxPages: 3, timeoutMs: 20000 }).catch(function(e) {
-          logger.error('[grid-events] ticketmaster failed: ' + e.message); return []
-        }),
-        eventbrite.fetchEvents(lat, lng, Math.min(radiusMiles, 50), 60).catch(function(e) {
-          logger.error('[grid-events] eventbrite failed: ' + e.message); return []
-        }),
+        skiddle.fetchEvents(lat, lng, radiusMiles, 60, { maxResults: 500, timeoutMs: 20000 })
+          .catch(function(e) { logger.error('[events] skiddle: ' + e.message); return [] }),
+        ticketmaster.fetchEvents(lat, lng, radiusMiles, 60, { maxResults: 300, maxPages: 3, timeoutMs: 20000 })
+          .catch(function(e) { logger.error('[events] tm: ' + e.message); return [] }),
+        eventbrite.fetchEvents(lat, lng, Math.min(radiusMiles, 50), 60)
+          .catch(function(e) { logger.error('[events] eb: ' + e.message); return [] }),
       ])
-
-      const sk = results[0], tm = results[1], eb = results[2]
-      const allEvents = sk.concat(tm).concat(eb)
-      logger.info('[grid-events] Skiddle:' + sk.length + ' TM:' + tm.length + ' EB:' + eb.length + ' total:' + allEvents.length)
+      const allEvents = results[0].concat(results[1]).concat(results[2])
       state.fetched = allEvents.length
-
       for (const e of allEvents) {
         try {
           const match = await matchEventToVenue(e, cityLabel)
@@ -210,68 +318,13 @@ router.get('/events', checkSecret, async (req, res) => {
           if (r.isNew) state.added++; else state.updated++
         } catch (err) { state.errors++ }
       }
-
       await query("UPDATE events SET status='expired' WHERE ends_at < now() OR (ends_at IS NULL AND starts_at < now() - interval '6 hours')")
       state.running = false
       state.finishedAt = new Date().toISOString()
-      logger.info('[grid-events] done: ' + state.added + ' added, ' + state.updated + ' updated, ' + state.errors + ' errors')
     } catch (e) {
-      state.running = false
-      state.error = e.message
-      logger.error('[grid-events] failed: ' + e.message)
+      state.running = false; state.error = e.message
     }
   })()
 })
 
 module.exports = router
-
-// GET /sync-grid/enrich?limit=50&city=Wales
-// Re-queues all venues that have no enrichment (profile_last_enriched IS NULL)
-// or whose enrichment is stale (>7 days old). Safe to call multiple times.
-// Because the queue is in-memory, call this again if Railway restarts.
-router.get('/enrich', checkSecret, async (req, res, next) => {
-  try {
-    const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
-    const limit = Math.min(parseInt(req.query.limit || '200'), 500)
-    const city = req.query.city || null
-    const params = []
-    const where = [
-      "(profile_last_enriched IS NULL OR profile_last_enriched < now() - interval '7 days')",
-      "(enrichment_status IS NULL OR enrichment_status != 'done' OR enrichment_last_completed_at < now() - interval '7 days')"
-    ]
-    if (city) { params.push(city); where.push('city = $' + params.length) }
-    params.push(limit)
-    const { rows } = await query(
-      'SELECT id, name, city FROM venues WHERE (' + where[0] + ' OR ' + where[1] + ') ' +
-      (city ? 'AND city = $1 ' : '') +
-      'ORDER BY rating_count DESC NULLS LAST, created_at DESC LIMIT $' + params.length,
-      params
-    )
-    let queued = 0
-    for (const v of rows) {
-      if (scheduleVenueEnrichment(v.id, 'grid_reenrich')) queued++
-    }
-    const eta = Math.round(queued * 2.5 / 60)
-    res.json({
-      message: queued + ' venues queued for enrichment. ETA ~' + eta + ' mins. Check /sync-grid/enrich-status.',
-      queued, scanned: rows.length, city: city || 'all',
-      queueStatus: getQueueStatus()
-    })
-  } catch (err) { next(err) }
-})
-
-// GET /sync-grid/enrich-status — how many left in the enrichment queue
-router.get('/enrich-status', checkSecret, async (req, res, next) => {
-  try {
-    const { getQueueStatus } = require('../services/backgroundEnrichment')
-    const { rows } = await query(
-      "SELECT COUNT(*) total, " +
-      "COUNT(*) FILTER (WHERE profile_last_enriched IS NOT NULL) enriched, " +
-      "COUNT(*) FILTER (WHERE profile_last_enriched IS NULL) unenriched, " +
-      "COUNT(*) FILTER (WHERE enrichment_status = 'done') done, " +
-      "COUNT(*) FILTER (WHERE enrichment_status = 'pending') pending " +
-      "FROM venues"
-    )
-    res.json({ db: rows[0], queue: getQueueStatus() })
-  } catch (err) { next(err) }
-})
