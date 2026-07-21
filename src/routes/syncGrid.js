@@ -62,6 +62,28 @@ const REGIONS = {
     outdoorTypes: ['hiking_area', 'campground', 'natural_feature', 'visitor_center'],
     textQueries: OUTDOOR_TEXT_QUERIES,
   },
+
+  // Tight 3km grid across Liverpool, Wirral, Crosby, Formby & surrounding suburbs.
+  // Dense enough to catch small pubs, hidden cafés, beach access points etc.
+  liverpool: {
+    name: 'Liverpool Area',
+    north: 53.58, south: 53.34, west: -3.10, east: -2.85,
+    tileSpacingKm: 3, tileRadiusM: 3000,
+    label: 'Liverpool centre, Wirral, Crosby, Formby, Sefton Park, Speke — 3km dense grid',
+    types: [
+      'restaurant', 'cafe', 'bar', 'pub',
+      'tourist_attraction', 'museum', 'park', 'historical_landmark',
+    ],
+    outdoorTypes: ['hiking_area', 'natural_feature', 'visitor_center', 'campground', 'park'],
+    textQueries: [
+      'beach coastal walk',
+      'viewpoint',
+      'nature reserve',
+      'independent café',
+      'craft beer pub',
+      'walking trail',
+    ],
+  },
 }
 
 function buildTileGrid(region) {
