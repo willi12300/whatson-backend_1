@@ -28,7 +28,7 @@ async function freshPhotoName(placeId, key) {
   return name
 }
 
-async function photoStream(name, width, key) {
+async function photoResponse(name, width, key) {
   // Asking Google for the signed URI first avoids forwarding credentials across
   // Google's redirect and gives us a clean 400 when a stored photo name expired.
   const media = await axios.get(`https://places.googleapis.com/v1/${name}/media`, {
@@ -39,7 +39,7 @@ async function photoStream(name, width, key) {
   const photoUri = media.data?.photoUri
   if (!photoUri) throw Object.assign(new Error('missing_photo_uri'), { response: { status: 502 } })
   return axios.get(photoUri, {
-    responseType: 'stream',
+    responseType: 'arraybuffer',
     timeout: 15000,
     maxRedirects: 5,
     validateStatus: status => status >= 200 && status < 300,
@@ -62,29 +62,23 @@ router.get('/google-photo', async (req, res) => {
   try {
     let upstream
     try {
-      upstream = await photoStream(name, width, key)
+      upstream = await photoResponse(name, width, key)
     } catch (firstError) {
       if (firstError.response?.status !== 400) throw firstError
       const freshName = await freshPhotoName(placeIdFromPhotoName(name), key)
       if (!freshName) throw firstError
-      upstream = await photoStream(freshName, width, key)
+      upstream = await photoResponse(freshName, width, key)
     }
 
     const contentType = String(upstream.headers['content-type'] || '')
     if (!contentType.startsWith('image/')) {
-      upstream.data.destroy()
       return res.status(502).json({ error: 'invalid_photo_response' })
     }
 
     res.set('Content-Type', contentType)
     res.set('Cache-Control', 'public, max-age=3600')
     if (upstream.headers.etag) res.set('ETag', upstream.headers.etag)
-    upstream.data.on('error', err => {
-      logger.error('[media] Google photo stream failed:', err.message)
-      if (!res.headersSent) res.status(502).end()
-      else res.destroy(err)
-    })
-    upstream.data.pipe(res)
+    res.send(Buffer.from(upstream.data))
   } catch (err) {
     logger.error('[media] Google photo failed:', err.response?.status || err.message)
     if (!res.headersSent) res.status(err.response?.status === 404 ? 404 : 502).json({ error: 'photo_unavailable' })
