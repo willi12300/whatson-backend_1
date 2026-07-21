@@ -76,6 +76,7 @@ router.get('/google-photo', async (req, res) => {
     }
 
     res.set('Content-Type', contentType)
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin')
     res.set('Cache-Control', 'public, max-age=3600')
     if (upstream.headers.etag) res.set('ETag', upstream.headers.etag)
     res.send(Buffer.from(upstream.data))
