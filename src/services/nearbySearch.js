@@ -5,6 +5,7 @@
 // Review count is deliberately capped so huge chains/tourist favourites don't always win.
 
 const { query } = require('../db/pool')
+const { repairPhotoUrl } = require('../utils/helpers')
 const logger = require('../utils/logger')
 const { getIntentRule, filterByDecisionRule } = require('./decisionRules')
 
@@ -195,7 +196,7 @@ async function nearbySearch({ lat, lng, categories = [], radius = 3000, openNowO
       open_now: s.open,
       address: s.v.address || null,
       lat: s.v.lat, lng: s.v.lng,
-      cover_photo: s.v.cover_photo || (Array.isArray(s.v.photos) ? s.v.photos[0] : null),
+      cover_photo: repairPhotoUrl(s.v.cover_photo || (Array.isArray(s.v.photos) ? (s.v.photos[0]?.url || s.v.photos[0]) : null)),
       source: 'Sappo',
       google_maps_url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${s.v.name}, ${s.v.address || ''}`)}`,
       score: Math.round(s.score),

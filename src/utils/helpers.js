@@ -60,21 +60,42 @@ function jaroWinkler(s1, s2) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
-// ── Photo URL key repair ─────────────────────────────────────────────────────
-// Google Places (New) photo URLs embed the API key directly in the URL, e.g.
-//   https://places.googleapis.com/v1/places/XXX/photos/YYY/media?maxWidthPx=400&key=OLD_KEY
-// When the Google key changes (e.g. the old account was blocked and a new key
-// issued), every URL SAVED with the old key stops working and images break.
-//
-// Fix: at SERVE time, rewrite the key on any Google photo URL to the CURRENT
-// key. Saved URLs can then be from any past key and still resolve. Reads the
-// current key from GOOGLE_PLACES_API_KEY at call time (no config import → no
-// circular dependency).
+// ── Google photo delivery ────────────────────────────────────────────────────
+// Database rows contain historical Google Places media URLs. Never send their
+// embedded API keys to the app. On Railway, rewrite them to SAPPO's own image
+// route; that route contacts Google privately with the current server key.
+function publicApiBase() {
+  const configured = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN
+  const raw = configured || (railwayDomain ? `https://${railwayDomain}` : null)
+  return raw ? String(raw).replace(/\/+$/, '') : null
+}
+
+function googlePhotoParts(url) {
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname !== 'places.googleapis.com') return null
+    const match = parsed.pathname.match(/^\/v1\/(places\/[^/]+\/photos\/[^/]+)\/media$/)
+    if (!match) return null
+    const requested = Number(parsed.searchParams.get('maxWidthPx'))
+    const width = Number.isFinite(requested) ? Math.max(100, Math.min(Math.round(requested), 1600)) : 900
+    return { name: match[1], width }
+  } catch { return null }
+}
+
 function repairPhotoUrl(url, currentKey) {
   const key = currentKey || process.env.GOOGLE_PLACES_API_KEY
-  if (!url || typeof url !== 'string' || !key) return url
-  if (!url.includes('places.googleapis.com')) return url   // only Google photo URLs
-  // Replace an existing key=... param, or append one if somehow missing.
+  if (!url || typeof url !== 'string') return url
+  const googlePhoto = googlePhotoParts(url)
+  if (!googlePhoto) return url
+
+  const base = publicApiBase()
+  if (base) {
+    return `${base}/media/google-photo?name=${encodeURIComponent(googlePhoto.name)}&width=${googlePhoto.width}`
+  }
+
+  // Local-development fallback when no public backend URL is available.
+  if (!key) return url
   if (/[?&]key=/.test(url)) return url.replace(/([?&]key=)[^&]*/i, `$1${key}`)
   return url + (url.includes('?') ? '&' : '?') + `key=${key}`
 }
@@ -100,4 +121,4 @@ function repairVenuePhotos(venue, currentKey) {
   return out
 }
 
-module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep, repairPhotoUrl, repairVenuePhotos }
+module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep, googlePhotoParts, repairPhotoUrl, repairVenuePhotos }
