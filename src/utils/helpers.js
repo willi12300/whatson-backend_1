@@ -64,11 +64,17 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 // Database rows contain historical Google Places media URLs. Never send their
 // embedded API keys to the app. On Railway, rewrite them to SAPPO's own image
 // route; that route contacts Google privately with the current server key.
-function publicApiBase() {
+function publicApiBase(req) {
   const configured = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL
   const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN
   const raw = configured || (railwayDomain ? `https://${railwayDomain}` : null)
-  return raw ? String(raw).replace(/\/+$/, '') : null
+  if (raw) return String(raw).replace(/\/+$/, '')
+
+  // This makes the proxy work on a Railway/custom domain without requiring a
+  // second environment variable. `trust proxy` is enabled by the server, so
+  // req.protocol reflects the public https request.
+  const host = req && typeof req.get === 'function' ? req.get('host') : null
+  return host ? `${req.protocol || 'https'}://${host}`.replace(/\/+$/, '') : null
 }
 
 function googlePhotoParts(url) {
@@ -83,42 +89,61 @@ function googlePhotoParts(url) {
   } catch { return null }
 }
 
-function repairPhotoUrl(url, currentKey) {
-  const key = currentKey || process.env.GOOGLE_PLACES_API_KEY
+function repairPhotoUrl(url, currentKey, req) {
   if (!url || typeof url !== 'string') return url
   const googlePhoto = googlePhotoParts(url)
   if (!googlePhoto) return url
 
-  const base = publicApiBase()
+  const base = publicApiBase(req)
   if (base) {
     return `${base}/media/google-photo?name=${encodeURIComponent(googlePhoto.name)}&width=${googlePhoto.width}`
   }
 
-  // Local-development fallback when no public backend URL is available.
-  if (!key) return url
-  if (/[?&]key=/.test(url)) return url.replace(/([?&]key=)[^&]*/i, `$1${key}`)
-  return url + (url.includes('?') ? '&' : '?') + `key=${key}`
+  // Never re-send a Google key to the app. A request-aware response always has
+  // a public base; this relative fallback is only for non-HTTP local callers.
+  return `/media/google-photo?name=${encodeURIComponent(googlePhoto.name)}&width=${googlePhoto.width}`
 }
 
 // Repair every photo URL on a venue row/object IN PLACE-ish (returns a new
 // object). Handles `cover_photo`, `photos` (array of strings or {url} objects),
 // and `heroImages`. Safe to call on any venue shape; leaves non-Google URLs be.
-function repairVenuePhotos(venue, currentKey) {
+function repairVenuePhotos(venue, currentKey, req) {
   if (!venue || typeof venue !== 'object') return venue
   const key = currentKey || process.env.GOOGLE_PLACES_API_KEY
   const fixOne = (p) => {
     if (!p) return p
-    if (typeof p === 'string') return repairPhotoUrl(p, key)
-    if (typeof p === 'object' && p.url) return { ...p, url: repairPhotoUrl(p.url, key) }
+    if (typeof p === 'string') return repairPhotoUrl(p, key, req)
+    if (typeof p === 'object' && p.url) return { ...p, url: repairPhotoUrl(p.url, key, req) }
     return p
   }
   let photos = venue.photos
   if (typeof photos === 'string') { try { photos = JSON.parse(photos) } catch { /* leave */ } }
   const out = { ...venue }
-  if (venue.cover_photo) out.cover_photo = repairPhotoUrl(venue.cover_photo, key)
+  if (venue.cover_photo) out.cover_photo = repairPhotoUrl(venue.cover_photo, key, req)
   if (Array.isArray(photos)) out.photos = photos.map(fixOne)
-  if (Array.isArray(venue.heroImages)) out.heroImages = venue.heroImages.map(p => repairPhotoUrl(p, key))
+  if (Array.isArray(venue.heroImages)) out.heroImages = venue.heroImages.map(p => repairPhotoUrl(p, key, req))
   return out
 }
 
-module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep, googlePhotoParts, repairPhotoUrl, repairVenuePhotos }
+// Safety net for every JSON endpoint. Recommendation and enrichment services
+// create their response objects in several places; recursively proxying only
+// recognised Google Place-media URLs keeps that internal detail out of every
+// client response without touching non-Google images.
+function repairGooglePhotoUrls(value, req, seen = new WeakMap()) {
+  if (typeof value === 'string') return repairPhotoUrl(value, null, req)
+  if (value == null || typeof value !== 'object') return value
+  if (Buffer.isBuffer(value) || value instanceof Date) return value
+  if (seen.has(value)) return seen.get(value)
+  if (Array.isArray(value)) {
+    const out = []
+    seen.set(value, out)
+    value.forEach(item => out.push(repairGooglePhotoUrls(item, req, seen)))
+    return out
+  }
+  const out = {}
+  seen.set(value, out)
+  Object.entries(value).forEach(([key, item]) => { out[key] = repairGooglePhotoUrls(item, req, seen) })
+  return out
+}
+
+module.exports = { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler, sleep, publicApiBase, googlePhotoParts, repairPhotoUrl, repairVenuePhotos, repairGooglePhotoUrls }

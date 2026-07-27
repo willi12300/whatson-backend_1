@@ -9,6 +9,7 @@ const { pool } = require('./db/pool')
 const { migrate } = require('./db/migrate')
 const logger = require('./utils/logger')
 const { config } = require('./config')
+const { repairGooglePhotoUrls } = require('./utils/helpers')
 
 const app = express()
 app.set('trust proxy', 1)
@@ -17,6 +18,15 @@ app.use(helmet({ contentSecurityPolicy: false }))
 app.use(cors())
 app.use(express.json())
 app.use(rateLimit({ windowMs: 60 * 1000, max: 300, validate: { trustProxy: false } }))
+
+// Google Places photo URLs are short-lived and a browser must never use the
+// server's Google key. Route every recognised Google photo through /media,
+// regardless of which API endpoint produced the venue/event/plan JSON.
+app.use((req, res, next) => {
+  const sendJson = res.json.bind(res)
+  res.json = body => sendJson(repairGooglePhotoUrls(body, req))
+  next()
+})
 
 // Serve the control panel dashboard at /app
 app.use('/app', express.static(path.join(__dirname, '..', 'public')))
