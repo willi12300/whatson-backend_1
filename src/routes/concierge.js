@@ -9,6 +9,7 @@ const { findPlace, reverseGeocode } = require('../clients/google')
 const { buildSuggestions } = require('../services/suggestionMode')
 const { detectSearchIntent } = require('../services/decisionRules')
 const { getProfile, plannerBoosts } = require('../services/travelProfile')
+const { filterCandidatesForPlan, estimateItinerarySchedule, isTimeAppropriate, apiHours } = require('../services/openingHours')
 const { getCityKnowledge } = require('../services/cityKnowledge')
 const { getVenueProfile } = require('../services/venueProfile')
 const { upsertVenue } = require('../services/sync')
@@ -421,7 +422,7 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
       ? intent.categories
       : ['restaurant', 'bar', 'pub', 'cafe', 'music_venue', 'attraction', 'museum', 'landmark', 'gallery', 'park']
     const { rows } = await query(
-      `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
+      `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours
        FROM venues
        WHERE city = $1 AND name IS NOT NULL
          AND category_slug = ANY($2)
@@ -434,7 +435,7 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
     // if that came back thin, broaden (but still skip hotels)
     if (dbVenues.length < 8) {
       const { rows: more } = await query(
-        `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
+        `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours
          FROM venues WHERE city = $1 AND name IS NOT NULL
            AND category_slug NOT IN ('lodging','hotel')
          ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
@@ -476,6 +477,14 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
       .sort((a, b) => b._pscore - a._pscore)
   }
 
+  const planningStart = new Date()
+  // Hard availability gate before Gemini sees a venue. Do not ask the model to
+  // reason around closed places; remove them from the candidate universe.
+  dbVenues = filterCandidatesForPlan(dbVenues, { city: loc.cityName, stops: 3, startAt: planningStart })
+  if (!dbVenues.length) {
+    return res.json({ type: 'reply', say: `Most suitable places in ${loc.cityName} are closed for the next few hours. I can look for later-opening bars, dessert spots or events instead.` })
+  }
+
   // 2. Ask Gemini to build a hybrid itinerary (prefer DB venues, fill gaps with real places).
   const conversation = (thread || []).slice(-12)
   const prefNote = buildPrefNote(boosts)
@@ -489,13 +498,16 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
     const byId = Object.fromEntries(dbVenues.map(v => [String(v.id), v]))
     const seen = new Set()
     const rawStops = itin.stops.filter(s => {
+      // Only verified, pre-filtered DB venues are allowed into a real plan.
+      // An unverified Gemini-only place has no trustworthy opening-hours data.
+      if (s.dbId == null || !byId[String(s.dbId).replace(/\D/g, '')]) return false
       const name = (s.dbId != null ? byId[String(s.dbId).replace(/\D/g, '')]?.name : null) || s.name
       if (!name || seen.has(name.toLowerCase())) return false
       seen.add(name.toLowerCase()); return true
     })
 
     // Build each stop; geocode the "Sappo pick" ones to get real coordinates + a photo.
-    const stops = await Promise.all(rawStops.map(async (s, i) => {
+    let stops = await Promise.all(rawStops.map(async (s, i) => {
       const db = s.dbId != null ? byId[String(s.dbId).replace(/\D/g, '')] : null
       let name = db?.name || s.name
       let address = db?.address || s.address || null
@@ -519,11 +531,21 @@ async function makePlan(res, { selectedCity, lat, lng, intent, sayBefore, gemini
       return {
         order: i + 1, name, why: s.why || '', address,
         category_slug: db?.category_slug || s.category || 'other',
+        opening_hours: db?.opening_hours || null,
         rating, lat, lng, photoUrl,
         verified: !!db,
         mapUrl: `https://www.google.com/maps/search/?api=1&query=${mapQuery}`,
       }
     }))
+
+    const scheduled = estimateItinerarySchedule(stops, { startAt: planningStart, origin: { lat: loc.lat, lng: loc.lng }, city: loc.cityName })
+    stops = scheduled.filter(s => s.availability.eligible && isTimeAppropriate(s, new Date(s.estimatedArrivalAt), { city: loc.cityName })).map((s, i) => ({
+      ...s,
+      order: i + 1,
+      arrival: { ...s.availability, estimatedArrivalAt: s.estimatedArrivalAt, estimatedArrivalTime: s.estimatedArrivalTime, transportMode: 'walking' },
+      ...apiHours(s.opening_hours, { city: loc.cityName }),
+    }))
+    if (!stops.length) return res.json({ type: 'reply', say: `Most suitable places in ${loc.cityName} are closed when you would arrive. I can find something later instead.` })
 
     // Walking time + distance between consecutive stops (best-effort).
     for (let i = 0; i < stops.length - 1; i++) {

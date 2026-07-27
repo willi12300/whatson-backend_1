@@ -84,15 +84,13 @@ async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5, goo
 
   // ---- DB reads (fast, local) run in parallel with each other ----
   const dbVenuesP = query(
-    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng,
-            opening_hours, business_status, website, gem_tags, gem_cautions,
-            cover_photo, photos, google_place_id, updated_at
+    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours, website, gem_tags, gem_cautions
      FROM venues WHERE city = $1 AND name IS NOT NULL AND category_slug = ANY($2) LIMIT 400`,
     [cityName, cats]
   ).then(r => r.rows.map(v => ({ ...v, _src: 'db' }))).catch(e => { logger.error('[roulette] db venues failed:', e.message); return [] })
 
   const dbEventsP = query(
-    `SELECT e.id, e.name, e.category, e.genre, e.starts_at, e.ends_at, e.is_free, e.min_price, e.ticket_url,
+    `SELECT e.id, e.name, e.category, e.genre, e.starts_at, e.is_free, e.min_price, e.ticket_url,
             e.image_url, v.lat, v.lng, v.name AS venue_name, v.address,
             (SELECT provider FROM event_sources es WHERE es.event_id = e.id LIMIT 1) AS provider
      FROM events e LEFT JOIN venues v ON v.id = e.venue_id
@@ -122,7 +120,6 @@ async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5, goo
       lat: v.location?.latitude ?? v.lat,
       lng: v.location?.longitude ?? v.lng,
       opening_hours: v.openingHours || v.regularOpeningHours || v.opening_hours || null,
-      business_status: v.businessStatus || v.business_status || null,
       website: v.websiteUri || v.website || null,
       photos: v.photos || [],
       _src: 'google',
@@ -166,7 +163,7 @@ async function gatherCandidates({ lat, lng, cityName, cats, radiusMiles = 5, goo
       liveEvents.push({
         id: ev.providerId ? `${ev.provider}:${ev.providerId}` : null,
         name: ev.name, category: ev.category, genre: ev.genre,
-        starts_at: ev.startsAt, ends_at: ev.endsAt || null, is_free: ev.isFree, min_price: ev.minPrice,
+        starts_at: ev.startsAt, is_free: ev.isFree, min_price: ev.minPrice,
         ticket_url: ev.ticketUrl, image_url: ev.imageUrl,
         lat: ev.venueLat, lng: ev.venueLng, venue_name: ev.venueName, address: ev.venueAddress,
         provider: ev.provider, _src: 'live',

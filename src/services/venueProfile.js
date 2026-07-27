@@ -4,6 +4,7 @@ const { estimateBusy } = require('./busyEstimate')
 const { enrichTripAdvisorForVenue, hasTripAdvisor } = require('../clients/tripadvisor')
 const { getPlaceDetails, findPlaceDetails } = require('../clients/google')
 const { deriveTagsForVenue } = require('./gemTags')
+const { normaliseOpeningHours: normaliseTimeAwareHours, apiHours } = require('./openingHours')
 const logger = require('../utils/logger')
 
 function toNum(x) {
@@ -28,8 +29,10 @@ function normalizeOpeningHours(raw) {
   const nextOpen = oh.nextOpenTime || oh.next_open_time || oh.next_open || null
   const nextClose = oh.nextCloseTime || oh.next_close_time || oh.next_close || null
   const weekday = oh.weekdayDescriptions || oh.weekday_text || oh.weekday_descriptions || []
+  const canonical = normaliseTimeAwareHours(oh, { city: oh.city }) || {}
   return {
     ...oh,
+    ...canonical,
     openNow,
     open_now: openNow,
     next_open: nextOpen,
@@ -512,6 +515,7 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     driving_time_minutes: drive,
     driving_time_text: drive ? `${drive} min drive` : null,
     open_now: openNow,
+    ...apiHours(venue.opening_hours, { city: venue.city }),
     closes_text: closesText(venue),
     opens_text: nextOpenText(venue),
     opening_hours_checked_at: asJson(venue.opening_hours, {})?.checked_at || venue.google_last_checked || null,

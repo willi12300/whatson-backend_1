@@ -32,8 +32,11 @@ router.post('/', async (req, res, next) => {
       home: home || null,
       budget: budget || null,
       busyPref: busyPref || null,
+      lat: lat != null ? Number(lat) : null,
+      lng: lng != null ? Number(lng) : null,
     })
     if (plan.error === 'no_venues') return res.status(404).json({ error: 'No venues for that city yet — run a sync first.' })
+    if (plan.error === 'no_open_venues') return res.status(200).json({ error: 'no_open_venues', message: plan.message, stops: [] })
     res.json(plan)
   } catch (err) {
     logger.error('plan-night error:', err.message)

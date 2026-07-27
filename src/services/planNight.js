@@ -7,6 +7,7 @@ const { generateJSON } = require('../clients/gemini')
 const { getTravel } = require('./travelProvider')
 const { estimatePlanCost, budgetGuidance } = require('./costEstimate')
 const { estimateBusy } = require('./busyEstimate')
+const { filterCandidatesForPlan, estimateItinerarySchedule, isTimeAppropriate, apiHours } = require('./openingHours')
 const logger = require('../utils/logger')
 
 // Surprise-me mode flavour text fed into the prompt
@@ -20,9 +21,10 @@ const MODE_HINTS = {
 }
 
 async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng }) {
+  const now = new Date()
   // 1. Pull venues for this city.
   const { rows: allVenues } = await query(
-    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng
+    `SELECT id, name, category_slug, rating, rating_count, price_level, address, lat, lng, opening_hours
      FROM venues
      WHERE city = $1 AND name IS NOT NULL
      ORDER BY (COALESCE(rating,0) * LEAST(COALESCE(rating_count,0),500)) DESC
@@ -69,17 +71,23 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home, bud
     return { ...v, _score: score, _reasons: reasons }
   }).sort((a, b) => b._score - a._score)
 
+  // Hard gate: unknown or closed venues never reach Gemini's shortlist.
+  const timeEligible = filterCandidatesForPlan(scored, { city, stops, startAt: now })
+
   // If the user asked for specific categories, DROP anything that doesn't match
   // (so a "burgers" request can't return a cocktail bar). Keep a small relevant set.
-  let relevant = scored
+  let relevant = timeEligible
   if (wantCats.size) {
-    const matching = scored.filter(v => wantCats.has(v.category_slug))
+    const matching = timeEligible.filter(v => wantCats.has(v.category_slug))
     // use matches if we have a reasonable number; otherwise fall back to top scored
-    relevant = matching.length >= stops ? matching : scored.filter(v => v._score > 0)
+    relevant = matching.length >= stops ? matching : timeEligible.filter(v => v._score > 0)
   }
 
   // Hand Gemini a TIGHT, relevant shortlist (not 60 random venues).
   const venues = relevant.slice(0, 24)
+  if (!venues.length) {
+    return { error: 'no_open_venues', message: `Most suitable places in ${city} are closed for the planned visit window. Try a later time, a wider area, or ask for bars and dessert spots.` }
+  }
 
 
   // 2. Pull a few upcoming events too
@@ -93,7 +101,6 @@ async function planNight({ city, vibe, mode, text, stops = 3, weather, home, bud
 
   // 3. Build the prompt
   // Precompute busy estimates for each venue (legal heuristics)
-  const now = new Date()
   const busyByVenue = {}
   for (const v of venues) busyByVenue[v.id] = estimateBusy(v, { when: now, events })
 
@@ -184,7 +191,7 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
   const ai = await generateJSON(prompt, { temperature: mode === 'chaos' ? 1.0 : 0.9 })
   if (!ai || !ai.stops) {
     logger.warn('Gemini returned no plan; using fallback')
-    return fallbackPlan(city, venues, vibe || mode)
+    return safeFallbackPlan(city, venues, vibe || mode, { startAt: now, origin: lat != null && lng != null ? { lat, lng } : null })
   }
 
   // 5. Map venueIds back to real venue records (guard hallucinated AND duplicate ids)
@@ -221,7 +228,29 @@ Rules: pick ${stops} stops, order them as a sensible night progression (e.g. foo
     }
   }
 
-  if (!stopsOut.length) return fallbackPlan(city, venues, vibe || mode)
+  if (!stopsOut.length) return safeFallbackPlan(city, venues, vibe || mode, { startAt: now, origin: lat != null && lng != null ? { lat, lng } : null })
+
+  // Gemini's order is only a draft. Validate the full sequence at each stop's
+  // estimated arrival and replace anything that closes before the visit ends.
+  const timeSafeStops = []
+  const timeSafeIds = new Set()
+  for (const candidate of [...stopsOut, ...venues]) {
+    if (!candidate || timeSafeIds.has(String(candidate.id))) continue
+    const proposed = { ...candidate, order: timeSafeStops.length + 1 }
+    const schedule = estimateItinerarySchedule([...timeSafeStops, proposed], { startAt: now, origin: lat != null && lng != null ? { lat, lng } : null, city })
+    if (!schedule[schedule.length - 1].availability.eligible || !isTimeAppropriate(proposed, new Date(schedule[schedule.length - 1].estimatedArrivalAt), { city })) continue
+    timeSafeStops.push(proposed)
+    timeSafeIds.add(String(candidate.id))
+    if (timeSafeStops.length >= stops) break
+  }
+  stopsOut.splice(0, stopsOut.length, ...timeSafeStops)
+  if (!stopsOut.length) return { error: 'no_open_venues', message: `Most suitable places in ${city} are closed for the planned visit window.` }
+
+  const scheduledStops = estimateItinerarySchedule(stopsOut, { startAt: now, origin: lat != null && lng != null ? { lat, lng } : null, city })
+  for (let i = 0; i < stopsOut.length; i++) {
+    stopsOut[i].arrival = { ...scheduledStops[i].availability, estimatedArrivalAt: scheduledStops[i].estimatedArrivalAt, estimatedArrivalTime: scheduledStops[i].estimatedArrivalTime, transportMode: 'walking' }
+    Object.assign(stopsOut[i], apiHours(stopsOut[i].opening_hours, { city }))
+  }
 
   // Compute travel time between consecutive stops (best-effort; null if no key).
   const legs = []
@@ -317,6 +346,21 @@ function fallbackPlan(city, venues, vibe) {
   const b = pick(['restaurant', 'bar']); if (b) stops.push({ ...b, order: 2, label: 'Dinner & drinks', why: 'Great food and atmosphere.' })
   const c = pick(['nightclub', 'music_venue', 'bar']); if (c) stops.push({ ...c, order: 3, label: 'Night out', why: 'End the night with energy.' })
   return { title: `A night in ${city}`, vibe: vibe || 'A classic night out', tip: 'Arrive early to beat the queues.', stops, source: 'fallback' }
+}
+
+function safeFallbackPlan(city, venues, vibe, { startAt, origin } = {}) {
+  const draft = fallbackPlan(city, venues, vibe)
+  const safe = []
+  for (const candidate of draft.stops) {
+    const schedule = estimateItinerarySchedule([...safe, candidate], { startAt: startAt || new Date(), origin: origin || null, city })
+    if (schedule[schedule.length - 1].availability.eligible && isTimeAppropriate(candidate, new Date(schedule[schedule.length - 1].estimatedArrivalAt), { city })) safe.push(candidate)
+  }
+  draft.stops = safe.map((stop, index) => {
+    const schedule = estimateItinerarySchedule(safe.slice(0, index + 1), { startAt: startAt || new Date(), origin: origin || null, city })
+    const current = schedule[schedule.length - 1]
+    return { ...stop, ...apiHours(stop.opening_hours, { city }), arrival: { ...current.availability, estimatedArrivalAt: current.estimatedArrivalAt, estimatedArrivalTime: current.estimatedArrivalTime, transportMode: 'walking' } }
+  })
+  return draft
 }
 
 module.exports = { planNight, MODE_HINTS }

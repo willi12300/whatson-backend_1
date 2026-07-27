@@ -14,6 +14,7 @@ const { modeAllowsChains } = require('../services/chainDetection')
 const { isKnownPoorQuality } = require('../services/qualityScore')
 const { computeSappoScore } = require('../services/sappoScore')
 const { getTimeContext, timeOfDayNudge } = require('../services/timeContext')
+const { evaluateOpeningHours, isTimeAppropriate, apiHours } = require('../services/openingHours')
 const router = express.Router()
 
 // Internal broad categories used by the decision engine.
@@ -339,11 +340,13 @@ router.post('/', async (req, res, next) => {
       }
 
       // ── GATE: closed now ──
-      const open = isOpenNow(v.opening_hours, when)
+      const availability = evaluateOpeningHours(v.opening_hours || v.openingHours, when, { city: cityName, durationMinutes: 45 })
+      const open = availability.eligible
       if (!reject) {
         if (open === false) { reject = true; rejectReason = 'closed_now' }
         else if (open === true) reasons.push('open now')
       }
+      if (!reject && !isTimeAppropriate(v, when, { city: cityName })) { reject = true; rejectReason = 'wrong_time_of_day' }
 
       // ── GATE: vibe hard-block (also collect boost for the vibe bucket) ──
       if (!reject) {
@@ -396,7 +399,7 @@ router.post('/', async (req, res, next) => {
         if (tod.reason && tod.nudge * timeWeight >= 4) reasons.push(tod.reason)
       }
 
-      const item = { kind: 'venue', v, score, buckets, reasons, reject, rejectReason, km, open, groups, isChain: isChainVenue }
+      const item = { kind: 'venue', v, score, buckets, reasons, reject, rejectReason, km, open, availability, groups, isChain: isChainVenue }
       item.score += repetitionPenalty(keyOf(item)) * 0.15   // scale penalty to 0..100 range
       if (reject) pushReject(rejected, v, rejectReason)
       return item
@@ -588,6 +591,8 @@ router.post('/', async (req, res, next) => {
       source: v._src === 'google' ? 'Google Places' : 'Sappo',
       google_maps_url: mapUrl,
       venueId: liveVenueId,
+      arrival: pick.availability,
+      ...apiHours(v.opening_hours || v.openingHours, { city: cityName }),
       actions: ['Let\u2019s Go', 'Spin Again', 'Add to Plan'],
       debug,
     })

@@ -6,9 +6,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "test": "node --test test/recommendationEngine.test.js",
     "migrate": "node src/db/migrate.js",
-    "sync:liverpool": "node src/scripts/syncLiverpool.js"
+    "sync:liverpool": "node src/scripts/syncLiverpool.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18.0.0"

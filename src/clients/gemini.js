@@ -72,6 +72,7 @@ Build a 3-stop itinerary that matches what the user ACTUALLY asked for (match th
 - If our database doesn't have what they want (e.g. a specific food, live music, a skatepark), use a REAL well-known place you know in this city, with its actual address. Never invent fake places.
 - Respect their time and constraints (e.g. if they've two hours near a station, keep it tight and close).
 ${localTime ? `- The current local time is ${localTime}. Suggest places appropriate for NOW — don't suggest breakfast late at night or clubs in the morning. Match the time of day.` : ''}
+- Every stop MUST use one of the supplied DB# venues. Do not introduce a venue from memory because it has not passed SAPPO's opening-hours gate.
 - Every stop MUST have a real address.
 - Order the stops so they flow well.${prefNote}
 
