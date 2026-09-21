@@ -9,6 +9,7 @@ const { estimatePlanCost, budgetGuidance } = require('./costEstimate')
 const { estimateBusy } = require('./busyEstimate')
 const { filterCandidatesForPlan, estimateItinerarySchedule, isTimeAppropriate, apiHours } = require('./openingHours')
 const logger = require('../utils/logger')
+const { buildTemplateExperience } = require('./experienceTemplateEngine')
 
 // Surprise-me mode flavour text fed into the prompt
 const MODE_HINTS = {
@@ -20,7 +21,15 @@ const MODE_HINTS = {
   stag_hen:  'a big group celebration — lively bars, group-friendly spots, party atmosphere',
 }
 
-async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng }) {
+// Compatibility entry point for existing concierge and smart-search callers.
+// It deliberately delegates to the template engine: venue selection is now
+// deterministic and time-aware before Gemini is asked to explain it.
+async function planNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng, audience, availableMinutes, energy, walkingPreference }) {
+  return buildTemplateExperience({ city, vibe, mode, text, weather, budget, categories, lat, lng, audience, availableMinutes, energy, walkingPreference, now: new Date() })
+}
+
+// Retained temporarily as a reference during rollout; no route calls it.
+async function legacyPlanNight({ city, vibe, mode, text, stops = 3, weather, home, budget, busyPref, categories = [], lat, lng }) {
   const now = new Date()
   // 1. Pull venues for this city.
   const { rows: allVenues } = await query(

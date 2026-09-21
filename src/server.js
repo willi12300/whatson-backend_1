@@ -14,7 +14,13 @@ const { repairGooglePhotoUrls } = require('./utils/helpers')
 const app = express()
 app.set('trust proxy', 1)
 
-app.use(helmet({ contentSecurityPolicy: false }))
+// The web frontend and Capacitor Android app load venue images from this API
+// on a different origin. Helmet's default `same-origin` resource policy makes
+// a perfectly valid JPEG look like a failed image to those clients.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}))
 app.use(cors())
 app.use(express.json())
 app.use(rateLimit({ windowMs: 60 * 1000, max: 300, validate: { trustProxy: false } }))
@@ -88,6 +94,11 @@ async function start() {
       const seeded = await seedMissions()
       if (seeded.created) logger.info(`Seeded ${seeded.created} curated missions.`)
     } catch (e) { logger.error('Mission seed skipped:', e.message) }
+    try {
+      const { seedExperienceTemplates } = require('./services/seedExperienceTemplates')
+      const seeded = await seedExperienceTemplates()
+      logger.info(`Experience templates ready: ${seeded}.`)
+    } catch (e) { logger.error('Experience template seed skipped:', e.message) }
     try {
       const { enrichVenueIntelligence } = require('./services/venueIntelligence')
       await enrichVenueIntelligence(null)

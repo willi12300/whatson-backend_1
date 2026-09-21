@@ -1,6 +1,6 @@
 const express = require('express')
 const { CITIES } = require('../config')
-const { planNight } = require('../services/planNight')
+const { buildTemplateExperience } = require('../services/experienceTemplateEngine')
 const { getWeather } = require('../clients/weather')
 const logger = require('../utils/logger')
 const router = express.Router()
@@ -22,21 +22,22 @@ router.post('/', async (req, res, next) => {
       try { weather = await getWeather(wlat, wlng) } catch (e) { logger.error('plan weather skipped:', e.message) }
     }
 
-    const plan = await planNight({
+    const plan = await buildTemplateExperience({
       city,
       vibe: vibe || null,
-      mode: mode || null,
       text: text || null,
-      stops: Math.min(Math.max(parseInt(stops) || 3, 2), 5),
       weather,
-      home: home || null,
       budget: budget || null,
-      busyPref: busyPref || null,
+      audience: req.body?.audience || req.body?.who || null,
+      availableMinutes: req.body?.availableMinutes || req.body?.durationMinutes || null,
+      energy: req.body?.energy || null,
+      walkingPreference: req.body?.walkingPreference || null,
+      now: new Date(),
       lat: lat != null ? Number(lat) : null,
       lng: lng != null ? Number(lng) : null,
     })
     if (plan.error === 'no_venues') return res.status(404).json({ error: 'No venues for that city yet — run a sync first.' })
-    if (plan.error === 'no_open_venues') return res.status(200).json({ error: 'no_open_venues', message: plan.message, stops: [] })
+    if (plan.error) return res.status(200).json({ error: plan.error, message: plan.message, stops: [] })
     res.json(plan)
   } catch (err) {
     logger.error('plan-night error:', err.message)

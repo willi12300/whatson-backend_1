@@ -763,7 +763,9 @@ router.post('/admin/queue-enrichment', async (req, res, next) => {
     const params = []
     const where = []
     if (city) { params.push(city); where.push(`city = $${params.length}`) }
-    where.push(`(tripadvisor_location_id IS NULL OR socials_checked = FALSE OR profile_last_enriched IS NULL)`)
+    // Include venues that lost their gallery during an older multi-source sync.
+    // The background Google enrichment will repopulate them safely.
+    where.push(`(tripadvisor_location_id IS NULL OR socials_checked = FALSE OR profile_last_enriched IS NULL OR jsonb_array_length(COALESCE(photos, '[]'::jsonb)) = 0)`)
     params.push(limit)
     const { rows } = await query(
       `SELECT id, name FROM venues ${where.length ? 'WHERE ' + where.join(' AND ') : ''}

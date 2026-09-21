@@ -268,8 +268,10 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
       return { ...venue, google_status: 'no_match', google_debug: debug }
     }
 
+    // Fresh Google media names are preferred. They can expire, while a stale
+    // existing cover otherwise prevents the new usable image from being stored.
     const nextPhotos = details.photos?.length ? details.photos : asJson(venue.photos, [])
-    const cover = venue.cover_photo || details.photos?.[0]?.url || null
+    const cover = details.photos?.[0]?.url || venue.cover_photo || null
     const reviews = details.reviews || []
     debug.status = 'synced'
 
@@ -285,8 +287,8 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
         phone=COALESCE(phone, $8),
         website=COALESCE(website, $9),
         google_review_sample=$10,
-        photos=COALESCE($11, photos),
-        cover_photo=COALESCE(cover_photo, $12),
+        photos=CASE WHEN jsonb_array_length(COALESCE($11::jsonb, '[]'::jsonb)) > 0 THEN $11::jsonb ELSE photos END,
+        cover_photo=COALESCE($12, cover_photo),
         profile_last_enriched=now(),
         google_last_checked=now(),
         google_status='synced',
@@ -334,7 +336,7 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
       website: venue.website || details.website,
       google_review_sample: reviews,
       photos: nextPhotos,
-      cover_photo: venue.cover_photo || cover,
+      cover_photo: cover,
       profile_last_enriched: new Date().toISOString(),
       google_last_checked: new Date().toISOString(),
       google_status: 'synced',

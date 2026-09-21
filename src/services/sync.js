@@ -8,6 +8,7 @@ const ticketmaster = require('../clients/ticketmaster')
 const { deduplicate, mergeCluster } = require('./dedup')
 const { matchEventToVenue } = require('./matchEvents')
 const logger = require('../utils/logger')
+const { hasUsablePhotos } = require('./photoData')
 
 function queueEnrichment(venueId, reason) {
   try {
@@ -28,8 +29,10 @@ async function upsertVenue(v, city) {
   }
   const isNew = !venueId
   if (venueId) {
-    await query(`UPDATE venues SET name=$1,normalised_name=$2,category_slug=$3,lat=$4,lng=$5,address=$6,postcode=$7,phone=$8,website=$9,rating=$10,rating_count=$11,price_level=$12,opening_hours=$13,business_status=$14,photos=$15,cover_photo=$16,city=$17,google_place_id=COALESCE($18, google_place_id),google_maps_url=COALESCE(google_maps_url,$19),updated_at=now(),last_seen_at=now() WHERE id=$20`,
-      [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,JSON.stringify(v.photos||[]),v.coverPhoto,city,googlePlaceId,googleMapsUrl,venueId])
+    const incomingPhotos = hasUsablePhotos(v.photos) ? JSON.stringify(v.photos) : null
+    const incomingCover = typeof v.coverPhoto === 'string' && v.coverPhoto.trim() ? v.coverPhoto : null
+    await query(`UPDATE venues SET name=$1,normalised_name=$2,category_slug=$3,lat=$4,lng=$5,address=$6,postcode=$7,phone=$8,website=$9,rating=$10,rating_count=$11,price_level=$12,opening_hours=$13,business_status=$14,photos=COALESCE($15::jsonb, photos),cover_photo=COALESCE($16, cover_photo),city=$17,google_place_id=COALESCE($18, google_place_id),google_maps_url=COALESCE(google_maps_url,$19),updated_at=now(),last_seen_at=now() WHERE id=$20`,
+      [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,incomingPhotos,incomingCover,city,googlePlaceId,googleMapsUrl,venueId])
   } else {
     const { rows } = await query(`INSERT INTO venues (name,normalised_name,category_slug,lat,lng,address,postcode,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,city,google_place_id,google_maps_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
       [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,JSON.stringify(v.photos||[]),v.coverPhoto,city,googlePlaceId,googleMapsUrl])
