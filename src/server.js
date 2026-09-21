@@ -48,6 +48,7 @@ app.use(require('./services/auth').withAuth)
 
 app.use('/auth',   require('./routes/auth'))
 app.use('/venues', require('./routes/venues'))
+app.use('/home', require('./routes/home'))
 app.use('/attractions', require('./routes/attractions'))
 app.use('/events', require('./routes/events'))
 app.use('/cities', require('./routes/cities'))
