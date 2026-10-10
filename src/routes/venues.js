@@ -265,7 +265,7 @@ router.get('/', async (req, res, next) => {
       params.push(parseFloat(lng) + dLng); where.push(`lng <= $${params.length}`)
     }
     params.push(parseInt(limit))
-    const { rows } = await query(`SELECT id,name,category_slug,lat,lng,address,city,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,claimed FROM venues WHERE ${where.join(' AND ')} LIMIT $${params.length}`, params)
+    const { rows } = await query(`SELECT id,name,category_slug,lat,lng,address,city,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,claimed,tripadvisor_rating,tripadvisor_review_count FROM venues WHERE ${where.join(' AND ')} LIMIT $${params.length}`, params)
     let result = rows
     if (lat && lng) {
       result = rows.map(v => ({ ...v, distance_m: Math.round(distanceMeters(parseFloat(lat), parseFloat(lng), v.lat, v.lng)) }))
