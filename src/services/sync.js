@@ -1,4 +1,5 @@
-const { query } = require('../db/pool')
+const { query, pool } = require('../db/pool')
+const { findDuplicateVenue, canonicalVenueId } = require('./venueIdentity')
 const google = require('../clients/google')
 const foursquare = require('../clients/foursquare')
 const osm = require('../clients/osm')
@@ -18,21 +19,40 @@ function queueEnrichment(venueId, reason) {
 }
 
 async function upsertVenue(v, city) {
+ const client=await pool.connect()
+ try {
+  await client.query('BEGIN')
+  await client.query('SELECT pg_advisory_xact_lock(20261012)')
+  const result=await upsertVenueRecord(v,city,(text,params)=>client.query(text,params))
+  await client.query('COMMIT')
+  queueEnrichment(result.id,result.isNew?'new_venue':'refreshed_venue')
+  return result
+ } catch(e){await client.query('ROLLBACK');throw e} finally{client.release()}
+}
+
+async function upsertVenueRecord(v,city,query) {
   const sources = Array.isArray(v.sources) ? v.sources.filter(Boolean) : []
   const googleSource = sources.find(s => s.provider === 'google') || null
   const googlePlaceId = googleSource?.providerId || v.googlePlaceId || null
   const googleMapsUrl = googlePlaceId ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(v.name || '')}&query_place_id=${encodeURIComponent(googlePlaceId)}` : null
-  let venueId = null
+  let venueId = null,identityMatch=false
   for (const s of sources) {
     const { rows } = await query(`SELECT venue_id FROM venue_sources WHERE provider=$1 AND provider_id=$2`, [s.provider, s.providerId])
     if (rows.length) { venueId = rows[0].venue_id; break }
   }
+  if(!venueId&&googlePlaceId){const {rows}=await query('SELECT id FROM venues WHERE google_place_id=$1 ORDER BY claimed DESC,id ASC LIMIT 1',[googlePlaceId]);venueId=rows[0]?.id||null}
+  if(!venueId){const duplicate=await findDuplicateVenue(v,query);venueId=duplicate?.id||null;identityMatch=!!duplicate}
+  if(venueId)venueId=await canonicalVenueId(venueId,query)
   const isNew = !venueId
   if (venueId) {
     const incomingPhotos = hasUsablePhotos(v.photos) ? JSON.stringify(v.photos) : null
     const incomingCover = typeof v.coverPhoto === 'string' && v.coverPhoto.trim() ? v.coverPhoto : null
+    if(identityMatch){
+      await query(`UPDATE venues SET address=COALESCE(address,$1),phone=COALESCE(phone,$2),website=COALESCE(website,$3),rating=COALESCE(rating,$4),rating_count=COALESCE(rating_count,$5),google_place_id=COALESCE(google_place_id,$6),google_maps_url=COALESCE(google_maps_url,$7),photos=CASE WHEN jsonb_array_length(COALESCE(photos,'[]'::jsonb))=0 THEN COALESCE($8::jsonb,photos) ELSE photos END,cover_photo=COALESCE(cover_photo,$9),last_seen_at=now() WHERE id=$10`,[v.address,v.phone,v.website,v.rating,v.ratingCount,googlePlaceId,googleMapsUrl,incomingPhotos,incomingCover,venueId])
+    }else {
     await query(`UPDATE venues SET name=$1,normalised_name=$2,category_slug=$3,lat=$4,lng=$5,address=$6,postcode=$7,phone=$8,website=$9,rating=$10,rating_count=$11,price_level=$12,opening_hours=$13,business_status=$14,photos=COALESCE($15::jsonb, photos),cover_photo=COALESCE($16, cover_photo),city=$17,google_place_id=COALESCE($18, google_place_id),google_maps_url=COALESCE(google_maps_url,$19),updated_at=now(),last_seen_at=now() WHERE id=$20`,
       [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,incomingPhotos,incomingCover,city,googlePlaceId,googleMapsUrl,venueId])
+    }
   } else {
     const { rows } = await query(`INSERT INTO venues (name,normalised_name,category_slug,lat,lng,address,postcode,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,city,google_place_id,google_maps_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
       [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,JSON.stringify(v.photos||[]),v.coverPhoto,city,googlePlaceId,googleMapsUrl])
@@ -44,7 +64,7 @@ async function upsertVenue(v, city) {
   }
   // Any venue discovered or refreshed by APIs should become richer over time.
   // Fire-and-forget so city sync / roulette / concierge stay fast.
-  queueEnrichment(venueId, isNew ? 'new_venue' : 'refreshed_venue')
+  // Queue enrichment only after the wrapper commits the transaction.
   return { id: venueId, isNew }
 }
 
@@ -128,3 +148,4 @@ async function syncCity(cityPreset) {
 }
 
 module.exports = { syncCity, upsertVenue, upsertEvent }
+

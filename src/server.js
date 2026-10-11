@@ -90,6 +90,8 @@ async function start() {
     logger.info('Running database migrations...')
     await migrate()
     logger.info('Migrations done.')
+    const { runReviewedVenueMerges } = require('./services/mergeVenues')
+    await runReviewedVenueMerges(pool)
     try {
       const { seedMissions } = require('./services/seedMissions')
       const seeded = await seedMissions()
@@ -112,3 +114,4 @@ async function start() {
 
 start()
 process.on('SIGTERM', async () => { await pool.end(); process.exit(0) })
+

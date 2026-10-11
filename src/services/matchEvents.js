@@ -43,15 +43,13 @@ async function matchEventToVenue(event, city) {
 
   // 3. create stub venue
   if (event.venueLat && event.venueLng && event.venueName) {
-    const { rows } = await query(
-      `INSERT INTO venues (name, normalised_name, category_slug, lat, lng, address, city) VALUES ($1,$2,'other',$3,$4,$5,$6) RETURNING id`,
-      [event.venueName, normaliseName(event.venueName), event.venueLat, event.venueLng, event.venueAddress || null, city]
-    )
-    queueEnrichment(rows[0].id, 'event_stub_venue')
-    return { venueId: rows[0].id, confidence: 0.3, method: 'stub' }
+    const {upsertVenue}=require('./sync')
+    const result=await upsertVenue({name:event.venueName,normalisedName:normaliseName(event.venueName),category:'other',lat:event.venueLat,lng:event.venueLng,address:event.venueAddress||null,sources:[]},city)
+    return {venueId:result.id,confidence:0.3,method:'stub'}
   }
 
   return { venueId: null, confidence: 0, method: 'none' }
 }
 
 module.exports = { matchEventToVenue }
+

@@ -1,6 +1,7 @@
 const express = require('express')
 const { query } = require('../db/pool')
 const router = express.Router()
+const {canonicalVenueId}=require('../services/venueIdentity')
 
 // Haversine in metres
 function dist(lat1, lng1, lat2, lng2) {
@@ -28,7 +29,8 @@ async function awardXP(deviceId, amount) {
 // POST /checkins  { deviceId, venueId, lat?, lng? }
 router.post('/', async (req, res, next) => {
   try {
-    const { deviceId, venueId, lat, lng, accuracy } = req.body || {}
+    const { deviceId, venueId: originalVenueId, lat, lng, accuracy } = req.body || {}
+    const venueId=await canonicalVenueId(originalVenueId,query)
     if (!deviceId || !venueId) return res.status(400).json({ error: 'deviceId and venueId required' })
 
     // Location is REQUIRED — no coords, no check-in.
@@ -86,3 +88,4 @@ router.get('/:deviceId', async (req, res, next) => {
 })
 
 module.exports = router
+

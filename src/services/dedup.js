@@ -1,15 +1,8 @@
-const { distanceMeters, normaliseName, normalisePhone, extractDomain, jaroWinkler } = require('../utils/helpers')
+const { normaliseName } = require('../utils/helpers')
+
+const { sameVenue } = require('./venueIdentity')
 
 const PROVIDER_RANK = { google: 3, foursquare: 2, osm: 1 }
-
-function scoreDuplicate(a, b) {
-  let score = 0
-  if (jaroWinkler(normaliseName(a.name), normaliseName(b.name)) >= 0.85) score++
-  if (distanceMeters(a.lat, a.lng, b.lat, b.lng) < 80) score++
-  if (a.phone && b.phone && normalisePhone(a.phone).length >= 10 && normalisePhone(a.phone) === normalisePhone(b.phone)) score++
-  if (a.website && b.website && extractDomain(a.website) && extractDomain(a.website) === extractDomain(b.website)) score++
-  return score
-}
 
 function deduplicate(candidates) {
   const used = new Array(candidates.length).fill(false)
@@ -20,7 +13,7 @@ function deduplicate(candidates) {
     used[i] = true
     for (let j = i + 1; j < candidates.length; j++) {
       if (used[j]) continue
-      if (members.some(m => scoreDuplicate(m, candidates[j]) >= 2)) {
+      if (members.every(m => sameVenue(m, candidates[j]))) {
         members.push(candidates[j]); used[j] = true
       }
     }
@@ -86,3 +79,4 @@ function deriveCategory(c) {
 }
 
 module.exports = { deduplicate, mergeCluster }
+

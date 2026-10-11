@@ -4,6 +4,7 @@
 // opened profile, added to plan, shared and directions tapped.
 
 const { query } = require('../db/pool')
+const { canonicalVenueId } = require('./venueIdentity')
 const logger = require('../utils/logger')
 
 const ACTION_WEIGHTS = {
@@ -39,9 +40,9 @@ async function recordInteraction(input = {}) {
   if (!action) return { ok: false, error: 'missing_action' }
 
   const itemType = input.itemType || input.item_type || input.type || (input.eventId || input.event_id ? 'event' : 'venue')
-  const venueId = cleanId(input.venueId ?? input.venue_id)
+  const venueId = await canonicalVenueId(cleanId(input.venueId ?? input.venue_id),query)
   const eventId = cleanId(input.eventId ?? input.event_id)
-  const itemId = String(input.itemId ?? input.item_id ?? venueId ?? eventId ?? '') || null
+  const itemId = itemType==='venue'&&venueId?String(venueId):String(input.itemId ?? input.item_id ?? venueId ?? eventId ?? '') || null
   const weight = ACTION_WEIGHTS[action] ?? 0
 
   try {
@@ -226,3 +227,4 @@ module.exports = {
   venueLearningScore,
   itemKey,
 }
+

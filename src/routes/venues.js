@@ -14,6 +14,13 @@ const { getWeather } = require('../clients/weather')
 const { scheduleVenueEnrichment, getQueueStatus } = require('../services/backgroundEnrichment')
 const { upsertVenue } = require('../services/sync')
 const router = express.Router()
+const { canonicalVenueId } = require('../services/venueIdentity')
+
+// Public ID redirects only; archived profiles and private history are not exposed.
+router.get('/aliases', async (req,res,next)=>{
+  try { const {rows}=await query('SELECT duplicate_id,canonical_id FROM venue_aliases ORDER BY duplicate_id');res.json({aliases:Object.fromEntries(rows.map(r=>[r.duplicate_id,r.canonical_id]))}) } catch(e){next(e)}
+})
+router.param('id',async(req,res,next,id)=>{try{req.params.id=String(await canonicalVenueId(id,query));next()}catch(e){next(e)}})
 
 // GET /venues/test-google — quick health check for the Places API (New).
 // Hit this in a browser after enabling Places API (New) to confirm it works.
@@ -858,3 +865,4 @@ router.get("/:id", async (req, res, next) => {
 })
 
 module.exports = router
+

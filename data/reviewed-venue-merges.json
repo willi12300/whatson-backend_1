@@ -1,0 +1,1466 @@
+{
+  "auditDate": "2026-10-11",
+  "catalogueScanned": 10186,
+  "merges": [
+    {
+      "canonicalId": 6245,
+      "duplicateId": 6338,
+      "preferredId": 6245,
+      "expected": [
+        {
+          "id": 6245,
+          "name": "Wavertree Botanic Garden and Park",
+          "lat": 53.406400299999994,
+          "lng": -2.941659
+        },
+        {
+          "id": 6338,
+          "name": "Wavertree Botanic Walled Garden Edge Lane",
+          "lat": 53.4077181,
+          "lng": -2.9426294
+        }
+      ],
+      "reason": "Reviewed whole-site venue with offset entrance/location coordinates"
+    },
+    {
+      "canonicalId": 7463,
+      "duplicateId": 51983,
+      "preferredId": 51983,
+      "expected": [
+        {
+          "id": 51983,
+          "name": "Stanleys",
+          "lat": 53.423065099999995,
+          "lng": -3.0472767
+        },
+        {
+          "id": 7463,
+          "name": "Stanleys",
+          "lat": 53.4230548,
+          "lng": -3.0472769
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7467,
+      "duplicateId": 51990,
+      "preferredId": 51990,
+      "expected": [
+        {
+          "id": 51990,
+          "name": "Farmer's Arms",
+          "lat": 53.4260932,
+          "lng": -3.066897
+        },
+        {
+          "id": 7467,
+          "name": "Farmers Arms",
+          "lat": 53.4260492,
+          "lng": -3.0670481
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 31,
+      "duplicateId": 7328,
+      "preferredId": 7328,
+      "expected": [
+        {
+          "id": 7328,
+          "name": "Bean Coffee Roasters",
+          "lat": 53.403731699999994,
+          "lng": -2.9843615
+        },
+        {
+          "id": 31,
+          "name": "Bean Coffee Roasters",
+          "lat": 53.403731699999994,
+          "lng": -2.9843615
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6998,
+      "duplicateId": 51656,
+      "preferredId": 51656,
+      "expected": [
+        {
+          "id": 51656,
+          "name": "North Star",
+          "lat": 53.400900099999994,
+          "lng": -3.0548226
+        },
+        {
+          "id": 6998,
+          "name": "North Star",
+          "lat": 53.4008842,
+          "lng": -3.0549081
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7333,
+      "duplicateId": 51306,
+      "preferredId": 51306,
+      "expected": [
+        {
+          "id": 51306,
+          "name": "Indigo",
+          "lat": 53.372886199999996,
+          "lng": -3.0079487
+        },
+        {
+          "id": 7333,
+          "name": "Indigo",
+          "lat": 53.3728518,
+          "lng": -3.0079796
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7532,
+      "duplicateId": 60,
+      "preferredId": 60,
+      "expected": [
+        {
+          "id": 60,
+          "name": "PINS Social Club Liverpool",
+          "lat": 53.4021797,
+          "lng": -2.9827345999999997
+        },
+        {
+          "id": 7532,
+          "name": "PINS",
+          "lat": 53.4022266,
+          "lng": -2.9827746
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7572,
+      "duplicateId": 51853,
+      "preferredId": 51853,
+      "expected": [
+        {
+          "id": 51853,
+          "name": "The Rocket Pub & Kitchen",
+          "lat": 53.406177,
+          "lng": -2.8998123
+        },
+        {
+          "id": 7572,
+          "name": "The Rocket",
+          "lat": 53.4062267,
+          "lng": -2.8997126
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 70,
+      "duplicateId": 7307,
+      "preferredId": 70,
+      "expected": [
+        {
+          "id": 70,
+          "name": "Bamboo Brunch And Cocktails",
+          "lat": 53.4023509,
+          "lng": -2.9769841
+        },
+        {
+          "id": 7307,
+          "name": "Bamboo",
+          "lat": 53.4023257,
+          "lng": -2.976917
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7271,
+      "duplicateId": 52277,
+      "preferredId": 52277,
+      "expected": [
+        {
+          "id": 52277,
+          "name": "The Mess, Fort Perch Rock",
+          "lat": 53.442671100000005,
+          "lng": -3.0407721
+        },
+        {
+          "id": 7271,
+          "name": "The Mess",
+          "lat": 53.4424383,
+          "lng": -3.0409285
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 19823,
+      "duplicateId": 19827,
+      "preferredId": 19827,
+      "expected": [
+        {
+          "id": 19827,
+          "name": "Finch Square Shop and Cafe",
+          "lat": 52.0830266,
+          "lng": -4.6578471
+        },
+        {
+          "id": 19823,
+          "name": "Finch Station Shop & Cafe",
+          "lat": 52.083002099999995,
+          "lng": -4.6578484
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 19304,
+      "duplicateId": 19311,
+      "preferredId": 19304,
+      "expected": [
+        {
+          "id": 19304,
+          "name": "The Lamb Of Rhos",
+          "lat": 51.9978006,
+          "lng": -4.3623331
+        },
+        {
+          "id": 19311,
+          "name": "The Lamb Of Rhos",
+          "lat": 51.9978019,
+          "lng": -4.3623573
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7128,
+      "duplicateId": 51295,
+      "preferredId": 51295,
+      "expected": [
+        {
+          "id": 51295,
+          "name": "The Acorn",
+          "lat": 53.3555121,
+          "lng": -3.0251588
+        },
+        {
+          "id": 7128,
+          "name": "The Acorn",
+          "lat": 53.3555218,
+          "lng": -3.0250991
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7534,
+      "duplicateId": 51957,
+      "preferredId": 51957,
+      "expected": [
+        {
+          "id": 51957,
+          "name": "The Nelson",
+          "lat": 53.4293268,
+          "lng": -3.0632449999999998
+        },
+        {
+          "id": 7534,
+          "name": "The Nelson",
+          "lat": 53.4293216,
+          "lng": -3.063254
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7473,
+      "duplicateId": 51290,
+      "preferredId": 51290,
+      "expected": [
+        {
+          "id": 51290,
+          "name": "Bridge Inn",
+          "lat": 53.3527438,
+          "lng": -2.9950189
+        },
+        {
+          "id": 7473,
+          "name": "The Bridge Inn",
+          "lat": 53.352716,
+          "lng": -2.9949723
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 26296,
+      "duplicateId": 26303,
+      "preferredId": 26296,
+      "expected": [
+        {
+          "id": 26303,
+          "name": "Menai Bridge Community Heritage Trust Ltd",
+          "lat": 53.2238356,
+          "lng": -4.1656515999999995
+        },
+        {
+          "id": 26296,
+          "name": "Menai Bridges Museum",
+          "lat": 53.223727,
+          "lng": -4.165649999999999
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7417,
+      "duplicateId": 7715,
+      "preferredId": 7417,
+      "expected": [
+        {
+          "id": 7715,
+          "name": "Soho Bar Liverpool",
+          "lat": 53.4034568,
+          "lng": -2.9802826
+        },
+        {
+          "id": 7417,
+          "name": "Soho Bar Liverpool",
+          "lat": 53.4034568,
+          "lng": -2.9802826
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 27109,
+      "duplicateId": 27125,
+      "preferredId": 27109,
+      "expected": [
+        {
+          "id": 27125,
+          "name": "The Port Inn",
+          "lat": 53.307197599999995,
+          "lng": -4.6299713
+        },
+        {
+          "id": 27109,
+          "name": "The Port Inn",
+          "lat": 53.307197599999995,
+          "lng": -4.6299713
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6980,
+      "duplicateId": 52260,
+      "preferredId": 52260,
+      "expected": [
+        {
+          "id": 52260,
+          "name": "Seahorse",
+          "lat": 53.4407425,
+          "lng": -3.0456364
+        },
+        {
+          "id": 6980,
+          "name": "The Seahorse",
+          "lat": 53.4408409,
+          "lng": -3.0455985
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6990,
+      "duplicateId": 51949,
+      "preferredId": 51949,
+      "expected": [
+        {
+          "id": 51949,
+          "name": "Lighthouse",
+          "lat": 53.427076799999995,
+          "lng": -3.0669041999999997
+        },
+        {
+          "id": 6990,
+          "name": "The Lighthouse",
+          "lat": 53.4270773,
+          "lng": -3.066711
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6796,
+      "duplicateId": 11884,
+      "preferredId": 11884,
+      "expected": [
+        {
+          "id": 11884,
+          "name": "Stag And Rainbow Beefeater",
+          "lat": 53.426609,
+          "lng": -2.9179017999999997
+        },
+        {
+          "id": 6796,
+          "name": "Stag and Rainbow",
+          "lat": 53.4266127,
+          "lng": -2.9182232
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7044,
+      "duplicateId": 52275,
+      "preferredId": 52275,
+      "expected": [
+        {
+          "id": 52275,
+          "name": "The Olive Tree Bistro",
+          "lat": 53.438443,
+          "lng": -3.0411699999999997
+        },
+        {
+          "id": 7044,
+          "name": "The Olive Tree",
+          "lat": 53.4384719,
+          "lng": -3.0411641
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7296,
+      "duplicateId": 52394,
+      "preferredId": 52394,
+      "expected": [
+        {
+          "id": 7296,
+          "name": "Carlisi",
+          "lat": 53.4089649,
+          "lng": -2.9855564
+        },
+        {
+          "id": 52394,
+          "name": "Carlisi",
+          "lat": 53.4090239,
+          "lng": -2.9856534
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 13506,
+      "duplicateId": 13507,
+      "preferredId": 13507,
+      "expected": [
+        {
+          "id": 13507,
+          "name": "Kenfig fish bench",
+          "lat": 51.5223016,
+          "lng": -3.7347162000000003
+        },
+        {
+          "id": 13506,
+          "name": "Fenfig fish bench",
+          "lat": 51.52230240000001,
+          "lng": -3.7347239
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 108,
+      "duplicateId": 6725,
+      "preferredId": 6725,
+      "expected": [
+        {
+          "id": 6725,
+          "name": "Birkenhead Park",
+          "lat": 53.394289199999996,
+          "lng": -3.0436254999999997
+        },
+        {
+          "id": 108,
+          "name": "Birkenhead Park",
+          "lat": 53.3931175,
+          "lng": -3.0419667
+        }
+      ],
+      "reason": "Reviewed whole-site venue with offset entrance/location coordinates"
+    },
+    {
+      "canonicalId": 6820,
+      "duplicateId": 51808,
+      "preferredId": 51808,
+      "expected": [
+        {
+          "id": 6820,
+          "name": "The Willow Bank",
+          "lat": 53.3929348,
+          "lng": -2.9339055
+        },
+        {
+          "id": 51808,
+          "name": "Willow Bank Tavern",
+          "lat": 53.393073,
+          "lng": -2.9339934
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6808,
+      "duplicateId": 51323,
+      "preferredId": 51323,
+      "expected": [
+        {
+          "id": 6808,
+          "name": "The Railway Inn",
+          "lat": 53.3575762,
+          "lng": -3.0015261
+        },
+        {
+          "id": 51323,
+          "name": "The Railway Inn",
+          "lat": 53.3576295,
+          "lng": -3.0015802
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7116,
+      "duplicateId": 7314,
+      "preferredId": 7116,
+      "expected": [
+        {
+          "id": 7116,
+          "name": "Thoughtfully Cafe",
+          "lat": 53.4015553,
+          "lng": -2.9851618
+        },
+        {
+          "id": 7314,
+          "name": "Thoughtfully Cafe",
+          "lat": 53.4014978,
+          "lng": -2.9851401
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7225,
+      "duplicateId": 8065,
+      "preferredId": 7225,
+      "expected": [
+        {
+          "id": 8065,
+          "name": "Core Coffee & Kitchen",
+          "lat": 53.4061361,
+          "lng": -2.9839567000000002
+        },
+        {
+          "id": 7225,
+          "name": "Core Coffee & Kitchen",
+          "lat": 53.4061361,
+          "lng": -2.9839567000000002
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7626,
+      "duplicateId": 51330,
+      "preferredId": 7626,
+      "expected": [
+        {
+          "id": 51330,
+          "name": "The Birch Tree",
+          "lat": 53.373666799999995,
+          "lng": -3.0342320999999997
+        },
+        {
+          "id": 7626,
+          "name": "The Mersey Clipper",
+          "lat": 53.373649099999994,
+          "lng": -3.0342187999999997
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7627,
+      "duplicateId": 51988,
+      "preferredId": 51988,
+      "expected": [
+        {
+          "id": 51988,
+          "name": "Tower Hotel",
+          "lat": 53.4189702,
+          "lng": -3.0429242
+        },
+        {
+          "id": 7627,
+          "name": "The Tower",
+          "lat": 53.4189027,
+          "lng": -3.0430908
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7560,
+      "duplicateId": 53020,
+      "preferredId": 53020,
+      "expected": [
+        {
+          "id": 53020,
+          "name": "The Railway",
+          "lat": 53.466888700000005,
+          "lng": -3.0052176999999998
+        },
+        {
+          "id": 7560,
+          "name": "The Railway",
+          "lat": 53.4669643,
+          "lng": -3.0052788
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6985,
+      "duplicateId": 51989,
+      "preferredId": 51989,
+      "expected": [
+        {
+          "id": 51989,
+          "name": "The Queens Arms",
+          "lat": 53.422013799999995,
+          "lng": -3.0428637
+        },
+        {
+          "id": 6985,
+          "name": "The Queens",
+          "lat": 53.4220418,
+          "lng": -3.042873
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7305,
+      "duplicateId": 7890,
+      "preferredId": 7305,
+      "expected": [
+        {
+          "id": 7890,
+          "name": "The Raven - JD Wetherspoon",
+          "lat": 53.463743799999996,
+          "lng": -2.9586549
+        },
+        {
+          "id": 7305,
+          "name": "The Raven - JD Wetherspoon",
+          "lat": 53.463743799999996,
+          "lng": -2.9586549
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6943,
+      "duplicateId": 7928,
+      "preferredId": 7928,
+      "expected": [
+        {
+          "id": 7928,
+          "name": "The Albion",
+          "lat": 53.453741199999996,
+          "lng": -2.9834354999999997
+        },
+        {
+          "id": 6943,
+          "name": "The Albion",
+          "lat": 53.4537335,
+          "lng": -2.9834842
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6727,
+      "duplicateId": 7457,
+      "preferredId": 7457,
+      "expected": [
+        {
+          "id": 7457,
+          "name": "Fort Perch Rock",
+          "lat": 53.442901,
+          "lng": -3.0405035
+        },
+        {
+          "id": 6727,
+          "name": "Fort Perch Rock",
+          "lat": 53.442901,
+          "lng": -3.0405035
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7475,
+      "duplicateId": 51298,
+      "preferredId": 51298,
+      "expected": [
+        {
+          "id": 7475,
+          "name": "King's Arms",
+          "lat": 53.3645271,
+          "lng": -3.0164517
+        },
+        {
+          "id": 51298,
+          "name": "Kings Arms",
+          "lat": 53.3645563,
+          "lng": -3.0163518
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7769,
+      "duplicateId": 12687,
+      "preferredId": 12687,
+      "expected": [
+        {
+          "id": 12687,
+          "name": "The Alexandra Pub",
+          "lat": 53.454030499999995,
+          "lng": -2.9967888
+        },
+        {
+          "id": 7769,
+          "name": "The Alexandra",
+          "lat": 53.4539699,
+          "lng": -2.9967755
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6959,
+      "duplicateId": 51324,
+      "preferredId": 51324,
+      "expected": [
+        {
+          "id": 51324,
+          "name": "Prenton Park",
+          "lat": 53.3747754,
+          "lng": -3.0323704
+        },
+        {
+          "id": 6959,
+          "name": "Prenton Park",
+          "lat": 53.3748179,
+          "lng": -3.0324019
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7496,
+      "duplicateId": 54750,
+      "preferredId": 54750,
+      "expected": [
+        {
+          "id": 7496,
+          "name": "The Grapes",
+          "lat": 53.4004113,
+          "lng": -2.9747395
+        },
+        {
+          "id": 54750,
+          "name": "The Grapes",
+          "lat": 53.400385099999994,
+          "lng": -2.9747065999999998
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7544,
+      "duplicateId": 51464,
+      "preferredId": 51464,
+      "expected": [
+        {
+          "id": 7544,
+          "name": "The Victoria",
+          "lat": 53.3761451,
+          "lng": -2.9316414
+        },
+        {
+          "id": 51464,
+          "name": "The Victoria",
+          "lat": 53.376186399999995,
+          "lng": -2.9317018999999997
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6986,
+      "duplicateId": 51980,
+      "preferredId": 51980,
+      "expected": [
+        {
+          "id": 51980,
+          "name": "The Boot",
+          "lat": 53.4193012,
+          "lng": -3.0485895999999997
+        },
+        {
+          "id": 6986,
+          "name": "The Boot",
+          "lat": 53.4192369,
+          "lng": -3.0486635
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6939,
+      "duplicateId": 51316,
+      "preferredId": 51316,
+      "expected": [
+        {
+          "id": 6939,
+          "name": "The Halfway House",
+          "lat": 53.373991,
+          "lng": -3.0418261
+        },
+        {
+          "id": 51316,
+          "name": "Halfway House",
+          "lat": 53.373977599999996,
+          "lng": -3.0418243
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7090,
+      "duplicateId": 10254,
+      "preferredId": 7090,
+      "expected": [
+        {
+          "id": 10254,
+          "name": "Cafe Tabac",
+          "lat": 53.4019851,
+          "lng": -2.9761613
+        },
+        {
+          "id": 7090,
+          "name": "Cafe Tabac",
+          "lat": 53.4019851,
+          "lng": -2.9761613
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7466,
+      "duplicateId": 51986,
+      "preferredId": 51986,
+      "expected": [
+        {
+          "id": 51986,
+          "name": "The Cheshire Cheese",
+          "lat": 53.420835999999994,
+          "lng": -3.0618019999999997
+        },
+        {
+          "id": 7466,
+          "name": "The Cheshire Cheese",
+          "lat": 53.4208657,
+          "lng": -3.0616758
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6902,
+      "duplicateId": 51623,
+      "preferredId": 51623,
+      "expected": [
+        {
+          "id": 51623,
+          "name": "Caernarvon Castle",
+          "lat": 53.382603200000005,
+          "lng": -3.0521061
+        },
+        {
+          "id": 6902,
+          "name": "Caernarfon Castle",
+          "lat": 53.3827304,
+          "lng": -3.0523841
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7607,
+      "duplicateId": 51270,
+      "preferredId": 51270,
+      "expected": [
+        {
+          "id": 51270,
+          "name": "The Woodchurch",
+          "lat": 53.3754658,
+          "lng": -3.0826305
+        },
+        {
+          "id": 7607,
+          "name": "The Woodchurch Hotel",
+          "lat": 53.3753236,
+          "lng": -3.0828881
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 3315,
+      "duplicateId": 6954,
+      "preferredId": 3315,
+      "expected": [
+        {
+          "id": 6954,
+          "name": "Gran Caff\u00e8",
+          "lat": 53.3817456,
+          "lng": -2.9451723
+        },
+        {
+          "id": 3315,
+          "name": "Gran Caffe Lark Lane",
+          "lat": 53.381753599999996,
+          "lng": -2.9452072
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7547,
+      "duplicateId": 11889,
+      "preferredId": 11889,
+      "expected": [
+        {
+          "id": 7547,
+          "name": "The Park",
+          "lat": 53.4298228,
+          "lng": -2.9621055
+        },
+        {
+          "id": 11889,
+          "name": "The Park Pub Anfield",
+          "lat": 53.4298842,
+          "lng": -2.9619850999999997
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7546,
+      "duplicateId": 11886,
+      "preferredId": 11886,
+      "expected": [
+        {
+          "id": 11886,
+          "name": "The Albert Pub Anfield",
+          "lat": 53.4301969,
+          "lng": -2.9625746
+        },
+        {
+          "id": 7546,
+          "name": "The Albert",
+          "lat": 53.4302292,
+          "lng": -2.9625385
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 46,
+      "duplicateId": 7646,
+      "preferredId": 46,
+      "expected": [
+        {
+          "id": 46,
+          "name": "BLUNDELL STREET SUPPER CLUB",
+          "lat": 53.3967188,
+          "lng": -2.9840457
+        },
+        {
+          "id": 7646,
+          "name": "Blundell Street",
+          "lat": 53.3965994,
+          "lng": -2.9839087
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6780,
+      "duplicateId": 51462,
+      "preferredId": 51462,
+      "expected": [
+        {
+          "id": 51462,
+          "name": "The Masonic Pub",
+          "lat": 53.3567792,
+          "lng": -2.8982657
+        },
+        {
+          "id": 6780,
+          "name": "The Masonic",
+          "lat": 53.3567541,
+          "lng": -2.8982505
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7656,
+      "duplicateId": 51855,
+      "preferredId": 51855,
+      "expected": [
+        {
+          "id": 51855,
+          "name": "The Richmond",
+          "lat": 53.390409,
+          "lng": -2.9149775
+        },
+        {
+          "id": 7656,
+          "name": "Richmond Tavern",
+          "lat": 53.3904543,
+          "lng": -2.9151409
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6813,
+      "duplicateId": 51318,
+      "preferredId": 51318,
+      "expected": [
+        {
+          "id": 51318,
+          "name": "Wellington",
+          "lat": 53.35339940000001,
+          "lng": -3.0051821999999997
+        },
+        {
+          "id": 6813,
+          "name": "The Wellington",
+          "lat": 53.3534038,
+          "lng": -3.0052075
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7449,
+      "duplicateId": 51328,
+      "preferredId": 51328,
+      "expected": [
+        {
+          "id": 51328,
+          "name": "The Bedford -\u201cLuke\u2019s\u201d",
+          "lat": 53.3723223,
+          "lng": -3.0100683
+        },
+        {
+          "id": 7449,
+          "name": "The Bedford",
+          "lat": 53.3724166,
+          "lng": -3.0100907
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7386,
+      "duplicateId": 54242,
+      "preferredId": 54242,
+      "expected": [
+        {
+          "id": 54242,
+          "name": "Black Cat Rose Lane",
+          "lat": 53.3785007,
+          "lng": -2.9166344
+        },
+        {
+          "id": 7386,
+          "name": "Black Cat",
+          "lat": 53.3784743,
+          "lng": -2.9166268
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 26262,
+      "duplicateId": 26284,
+      "preferredId": 26262,
+      "expected": [
+        {
+          "id": 26284,
+          "name": "Plas Cadnant",
+          "lat": 53.2362039,
+          "lng": -4.1654079
+        },
+        {
+          "id": 26262,
+          "name": "Plas Cadnant Hidden Gardens",
+          "lat": 53.236621,
+          "lng": -4.165236
+        }
+      ],
+      "reason": "Reviewed whole-site venue with offset entrance/location coordinates"
+    },
+    {
+      "canonicalId": 23243,
+      "duplicateId": 23244,
+      "preferredId": 23243,
+      "expected": [
+        {
+          "id": 23244,
+          "name": "Wern Mynach Community Garden",
+          "lat": 52.7269803,
+          "lng": -4.0619155
+        },
+        {
+          "id": 23243,
+          "name": "Wern Mynach",
+          "lat": 52.727562999999996,
+          "lng": -4.0612825
+        }
+      ],
+      "reason": "Reviewed whole-site venue with offset entrance/location coordinates"
+    },
+    {
+      "canonicalId": 19839,
+      "duplicateId": 19847,
+      "preferredId": 19839,
+      "expected": [
+        {
+          "id": 19839,
+          "name": "The Rampin (Masons Arms)",
+          "lat": 52.054260199999995,
+          "lng": -4.6228485
+        },
+        {
+          "id": 19847,
+          "name": "Masons Arms",
+          "lat": 52.054256099999996,
+          "lng": -4.6228473
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7489,
+      "duplicateId": 51706,
+      "preferredId": 51706,
+      "expected": [
+        {
+          "id": 51706,
+          "name": "Gallaghers Traditional Pub",
+          "lat": 53.393823499999996,
+          "lng": -3.0126212
+        },
+        {
+          "id": 7489,
+          "name": "Gallaghers",
+          "lat": 53.3938566,
+          "lng": -3.012746
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6978,
+      "duplicateId": 51327,
+      "preferredId": 51327,
+      "expected": [
+        {
+          "id": 51327,
+          "name": "The Rock Villa - More Drinks!",
+          "lat": 53.3718661,
+          "lng": -3.015595
+        },
+        {
+          "id": 6978,
+          "name": "The Rock Villa",
+          "lat": 53.3718789,
+          "lng": -3.0155496
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 61,
+      "duplicateId": 6247,
+      "preferredId": 6247,
+      "expected": [
+        {
+          "id": 6247,
+          "name": "Pier Head Liverpool",
+          "lat": 53.4053377,
+          "lng": -2.9971891999999998
+        },
+        {
+          "id": 61,
+          "name": "Liverpool Pier Head",
+          "lat": 53.404555,
+          "lng": -2.996868
+        }
+      ],
+      "reason": "Reviewed whole-site venue with offset entrance/location coordinates"
+    },
+    {
+      "canonicalId": 14875,
+      "duplicateId": 14894,
+      "preferredId": 14875,
+      "expected": [
+        {
+          "id": 14894,
+          "name": "Ynysangharad Park",
+          "lat": 51.6005733,
+          "lng": -3.3359365999999997
+        },
+        {
+          "id": 14875,
+          "name": "Ynysangharad War Memorial Park",
+          "lat": 51.601309799999996,
+          "lng": -3.3369966
+        }
+      ],
+      "reason": "Reviewed whole-site venue with offset entrance/location coordinates"
+    },
+    {
+      "canonicalId": 3318,
+      "duplicateId": 7338,
+      "preferredId": 3318,
+      "expected": [
+        {
+          "id": 3318,
+          "name": "Handyman Pub",
+          "lat": 53.390011099999995,
+          "lng": -2.9283354
+        },
+        {
+          "id": 7338,
+          "name": "Handyman",
+          "lat": 53.3900281,
+          "lng": -2.9284326
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6957,
+      "duplicateId": 52281,
+      "preferredId": 52281,
+      "expected": [
+        {
+          "id": 52281,
+          "name": "Clarence Hotel Wallasey",
+          "lat": 53.436087199999996,
+          "lng": -3.052863
+        },
+        {
+          "id": 6957,
+          "name": "The Clarence",
+          "lat": 53.4360145,
+          "lng": -3.0528415
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7477,
+      "duplicateId": 51317,
+      "preferredId": 51317,
+      "expected": [
+        {
+          "id": 51317,
+          "name": "Rose & Crown",
+          "lat": 53.3516553,
+          "lng": -3.0044896000000003
+        },
+        {
+          "id": 7477,
+          "name": "Rose and Crown",
+          "lat": 53.3516542,
+          "lng": -3.0044638
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7570,
+      "duplicateId": 52537,
+      "preferredId": 52537,
+      "expected": [
+        {
+          "id": 52537,
+          "name": "Wheatsheaf",
+          "lat": 53.4171602,
+          "lng": -2.8958942
+        },
+        {
+          "id": 7570,
+          "name": "The Wheatsheaf",
+          "lat": 53.417145,
+          "lng": -2.8959397
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7242,
+      "duplicateId": 7261,
+      "preferredId": 7242,
+      "expected": [
+        {
+          "id": 7261,
+          "name": "The Old Bank",
+          "lat": 53.3732753,
+          "lng": -2.9338679
+        },
+        {
+          "id": 7242,
+          "name": "The Old Bank Alehouse",
+          "lat": 53.373265499999995,
+          "lng": -2.9338773
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6928,
+      "duplicateId": 52255,
+      "preferredId": 52255,
+      "expected": [
+        {
+          "id": 52255,
+          "name": "The Magazine Hotel",
+          "lat": 53.430979,
+          "lng": -3.0338871999999997
+        },
+        {
+          "id": 6928,
+          "name": "The Magazines",
+          "lat": 53.4309416,
+          "lng": -3.033908
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 7585,
+      "duplicateId": 51433,
+      "preferredId": 51433,
+      "expected": [
+        {
+          "id": 7585,
+          "name": "Toby Carvery",
+          "lat": 53.3633562,
+          "lng": -2.9152734
+        },
+        {
+          "id": 51433,
+          "name": "Toby Carvery Aigburth",
+          "lat": 53.363382699999995,
+          "lng": -2.9153493999999998
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6964,
+      "duplicateId": 51325,
+      "preferredId": 51325,
+      "expected": [
+        {
+          "id": 6964,
+          "name": "The Beehive",
+          "lat": 53.3781464,
+          "lng": -3.0254244
+        },
+        {
+          "id": 51325,
+          "name": "The Beehive Pub",
+          "lat": 53.3781762,
+          "lng": -3.0254824
+        }
+      ],
+      "reason": "Reviewed name/location/contact match across overlapping imports"
+    },
+    {
+      "canonicalId": 6243,
+      "duplicateId": 6257,
+      "preferredId": 6243,
+      "expected": [
+        {
+          "id": 6243,
+          "name": "Princes Park",
+          "lat": 53.3864324,
+          "lng": -2.9536795
+        },
+        {
+          "id": 6257,
+          "name": "Princes Park",
+          "lat": 53.390085899999995,
+          "lng": -2.9552012
+        }
+      ],
+      "reason": "Reviewed duplicate whole-park listing at different park entrances"
+    },
+    {
+      "canonicalId": 9464,
+      "duplicateId": 9499,
+      "preferredId": 9464,
+      "expected": [
+        {
+          "id": 9464,
+          "name": "Parc del F\u00f2rum",
+          "lat": 41.4114594,
+          "lng": 2.2246577
+        },
+        {
+          "id": 9499,
+          "name": "Parc del F\u00f2rum",
+          "lat": 41.4161077,
+          "lng": 2.2285982
+        }
+      ],
+      "reason": "Reviewed duplicate whole-park listing at different park entrances"
+    }
+  ]
+}

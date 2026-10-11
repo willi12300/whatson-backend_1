@@ -1,4 +1,5 @@
 const { query } = require('../db/pool')
+const { canonicalVenueId } = require('./venueIdentity')
 const { distanceMeters, repairPhotoUrl } = require('../utils/helpers')
 const { estimateBusy } = require('./busyEstimate')
 const { enrichTripAdvisorForVenue, hasTripAdvisor } = require('../clients/tripadvisor')
@@ -431,6 +432,7 @@ async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
 }
 
 async function getVenueProfile(id, { lat = null, lng = null } = {}) {
+  id = await canonicalVenueId(id, query)
   const { rows } = await query(`SELECT * FROM venues WHERE id = $1`, [id])
   if (!rows.length) return null
   let venue = rows[0]
@@ -682,3 +684,4 @@ async function syncGoogleBatch({ city = null, limit = 25, force = false } = {}) 
 }
 
 module.exports = { getVenueProfile, deriveSappoScore, syncTripAdvisorForVenue, syncTripAdvisorBatch, syncGoogleForVenue, syncGoogleBatch, refreshGemTags }
+
