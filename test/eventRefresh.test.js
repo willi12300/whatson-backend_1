@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { createEventRefresher } = require('../src/services/eventRefresh')
+const { createEventRefresher, combineProviderStatus } = require('../src/services/eventRefresh')
 const city = { name: 'Liverpool', lat: 53.4084, lng: -2.9916, radiusMiles: 5 }
 
 test('simultaneous visitors share a complete refresh, including events after result 500', async () => {
@@ -44,4 +44,12 @@ test('an absent key is reported rather than caching an empty feed as fresh', asy
   const result = refresh.refresh(city)
   assert.equal(result.state.status, 'unavailable')
   await result.promise
+})
+
+test('a failed Ticketmaster refresh keeps successful Skiddle results and exposes provider status', () => {
+  const result = combineProviderStatus({ skiddle: { status: 'ready', saved: 1322 }, ticketmaster: { status: 'error', reason: 'http_401' } })
+  assert.equal(result.status, 'partial'); assert.equal(result.saved, 1322)
+  assert.equal(result.providers.ticketmaster.reason, 'http_401')
+  assert.equal(combineProviderStatus({skiddle: {status: 'ready'},ticketmaster: {status: 'refreshing'}}).status, 'refreshing')
+  assert.equal(combineProviderStatus({skiddle: {status: 'ready'},ticketmaster: {status: 'ready'}}).status, 'ready')
 })
