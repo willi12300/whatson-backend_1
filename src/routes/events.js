@@ -130,7 +130,7 @@ router.get('/:id/pricing', async (req,res,next) => {
     const {rows}=await query(`SELECT e.id,e.ticket_url,e.min_price,e.is_free,${priceSelect} FROM events e ${priceJoin} WHERE e.id=$1`,[req.params.id])
     if(!rows.length) return res.status(404).json({error:'Event not found'})
     const event=rows[0]
-    if(!event._price_checked_at) {
+    if(!event._price_checked_at && withTicketPricing(event).pricing?.status!=='priced') {
       const price=await refreshTicketPrice(event)
       event._ticket_pricing=price
     }
