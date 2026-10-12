@@ -18,12 +18,17 @@ function publicVenueUrl(value) {
     return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.port&&hosts.has(u.hostname.replace(/^www\./,''))?u.href:null
   }catch{return null}
 }
-function identity(venue) {return crypto.createHash('sha256').update(JSON.stringify([1,venue.id,venue.name,venue.website])).digest('hex')}
-function extractVenueDescription(html,name) {
+function identity(venue) {return crypto.createHash('sha256').update(JSON.stringify([2,venue.id,venue.name,venue.website])).digest('hex')}
+function extractVenueDescription(html,name,about=false) {
   const candidates=[]
   const normal=value=>text(value).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()
   const expected=normal(name)
   const title=normal(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]||'')
+  if(about && title.includes(expected)) {
+    const main=html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)?.[1]||html
+    const paragraphs=[...main.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)].map(match=>text(match[1])).filter(value=>value.length>120&&!/cookies?|privacy|newsletter|subscribe|copyright|gift cards?|terms and conditions/i.test(value))
+    if(paragraphs.length)candidates.push(excerpt(paragraphs.slice(0,2).join(' ')))
+  }
   function visit(value) {
     if(Array.isArray(value)){value.forEach(visit);return}
     if(!value||typeof value!=='object')return
@@ -37,7 +42,7 @@ function extractVenueDescription(html,name) {
     const attrs={};for(const attr of match[0].matchAll(/([\w:-]+)\s*=\s*(["'])([\s\S]*?)\2/g))attrs[attr[1].toLowerCase()]=attr[3]
     if(['description','og:description'].includes((attrs.name||attrs.property||'').toLowerCase())&&(title.includes(expected)||normal(attrs.content).includes(expected)))candidates.push(excerpt(attrs.content))
   }
-  return [...new Set(candidates)].filter(value=>value.length>=80&&!/cookie policy|accept cookies|access denied|captcha|just a moment|enable javascript/i.test(value)).slice(0,1)
+  return [...new Set(candidates)].filter(value=>value.length>=80&&!/cookie policy|accept cookies|access denied|captcha|just a moment|enable javascript/i.test(value)).sort((a,b)=>b.length-a.length).slice(0,1)
 }
 
 async function venueDescription(id) {
@@ -59,7 +64,18 @@ async function venueDescription(id) {
         if(!next||new URL(next).hostname.replace(/^www\./,'')!==new URL(url).hostname.replace(/^www\./,''))throw new Error('Unrelated source redirect')
         source=next
       }
-      if(response.status<300)paragraphs=extractVenueDescription(String(response.data),venue.name)
+      if(response.status<300) {
+        const html=String(response.data);paragraphs=extractVenueDescription(html,venue.name)
+        if((paragraphs[0]?.length||0)<280) {
+          const link=[...html.matchAll(/<a\b[^>]*href\s*=\s*(["'])(.*?)\1/gi)].map(match=>match[2]).find(href=>/\/(?:about(?:-us)?|our-story)\/?(?:\?|$)/i.test(href))
+          const about=link&&publicVenueUrl(new URL(link,source).href)
+          if(about&&new URL(about).hostname.replace(/^www\./,'')===new URL(source).hostname.replace(/^www\./,'')) {
+            const page=await axios.get(about,{timeout:6000,maxRedirects:0,maxContentLength:2*1024*1024})
+            const richer=extractVenueDescription(String(page.data),venue.name,true)
+            if((richer[0]?.length||0)>(paragraphs[0]?.length||0)){paragraphs=richer;source=about}
+          }
+        }
+      }
     }catch{}
     const checked=new Date().toISOString(),hash=crypto.createHash('sha256').update(paragraphs.join('\n')).digest('hex')
     // One row per venue: a changed identity replaces the old excerpt, not its profile.
