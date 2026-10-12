@@ -102,16 +102,18 @@ async function start() {
       const seeded = await seedExperienceTemplates()
       logger.info(`Experience templates ready: ${seeded}.`)
     } catch (e) { logger.error('Experience template seed skipped:', e.message) }
-    try {
-      const { enrichVenueIntelligence } = require('./services/venueIntelligence')
-      await enrichVenueIntelligence(null)
-    } catch (e) { logger.error('Intelligence enrich skipped:', e.message) }
   } catch (err) {
     logger.error('Migration failed:', err.message)
   }
   app.listen(config.port, () => {
     logger.info(`🚀 SAPPO API running on port ${config.port}`)
     require('./services/eventRefresh').startEventRefresh()
+    // This updates thousands of venue rows. It must not keep Railway's public
+    // port closed while an otherwise healthy app is marked Active.
+    Promise.resolve().then(async () => {
+      const { enrichVenueIntelligence } = require('./services/venueIntelligence')
+      await enrichVenueIntelligence(null)
+    }).catch(e => logger.error('Intelligence enrich skipped:', e.message))
   })
 }
 
