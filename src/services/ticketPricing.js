@@ -1,6 +1,13 @@
 const axios = require('axios')
 const { query } = require('../db/pool')
 const { config } = require('../config')
+let sourceCache={prices:{}}
+try{sourceCache=require('../../data/ticket-prices.json')}catch{}
+
+function cachedListingPrice(url) {
+  const price=sourceCache.prices[trustedListing(url)]
+  return price && Date.now()-Date.parse(price.checked_at)<6*3600000 ? price : null
+}
 
 function amount(value) {
   if (value == null || value === '' || typeof value === 'boolean') return null
@@ -104,7 +111,8 @@ async function refreshTicketPrice(event) {
 
 function withTicketPricing(event) {
   const raw = event._price_source || {}
-  const pricing = event._ticket_pricing?.status === 'priced' ? event._ticket_pricing : apiPricing(raw.provider,raw.data) || event._ticket_pricing
+  const snapshots=[event._ticket_pricing,cachedListingPrice(event.ticket_url)].filter(price=>price?.status==='priced').sort((a,b)=>Date.parse(b.checked_at||0)-Date.parse(a.checked_at||0))
+  const pricing = snapshots[0] || apiPricing(raw.provider,raw.data) || event._ticket_pricing
   const clean = {...event}; delete clean._price_source; delete clean._ticket_pricing; delete clean._price_checked_at
   if (pricing) {
     clean.pricing = pricing
