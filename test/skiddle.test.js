@@ -2,7 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const axios = require('axios')
 const { config } = require('../src/config')
-const { fetchEvents, eventStart } = require('../src/clients/skiddle')
+const { fetchEvents, eventStart, eventEnd } = require('../src/clients/skiddle')
 
 test('Skiddle uses documented date bounds, stable date order, and every result page', async () => {
   const original = axios.get, originalKey = config.skiddle.key
@@ -41,4 +41,8 @@ test('UK-local doors times use the offset on the event date, including winter', 
   assert.equal(eventStart({ startdate: '2026-10-17', openingtimes: { doorsopen: '14:00' } }).toISOString(), '2026-10-17T13:00:00.000Z')
   assert.equal(eventStart({ startdate: '2026-12-12', openingtimes: { doorsopen: '14:00' } }).toISOString(), '2026-12-12T14:00:00.000Z')
   assert.equal(eventStart({ startdate: '2026-10-17T13:00:00Z' }).toISOString(), '2026-10-17T13:00:00.000Z')
+  assert.equal(eventStart({ startdate: '2026-10-17T14:00:00' }).toISOString(), '2026-10-17T13:00:00.000Z')
+  assert.equal(eventStart({ startdate: '2026-12-12T14:00:00' }).toISOString(), '2026-12-12T14:00:00.000Z')
+  assert.equal(eventEnd({ enddate: '2026-10-17T23:00:00' }).toISOString(), '2026-10-17T22:00:00.000Z')
+  assert.equal(eventEnd({ enddate: '2026-10-17' }), null)
 })

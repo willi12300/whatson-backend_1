@@ -32,7 +32,7 @@ async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30, opts = {})
           name: e.eventname, description: e.description || null,
           imageUrl: e.largeimageurl || e.imageurl || null,
           startsAt: eventStart(e),
-          endsAt: e.enddate ? new Date(e.enddate) : null,
+          endsAt: eventEnd(e),
           isFree: e.MinPrice != null && e.MinPrice !== '' && parseFloat(e.MinPrice) === 0,
           minPrice: e.MinPrice ? parseFloat(e.MinPrice) : null,
           ticketUrl: e.link || null,
@@ -60,23 +60,36 @@ async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30, opts = {})
   return out.filter(e => e.startsAt)
 }
 
-function eventStart(e) {
-  if (!e.startdate) return null
-  const raw = String(e.startdate)
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const time = e.openingtimes?.doorsopen || e.openingtimes?.start || '00:00'
-    const clock = /^\d{2}:\d{2}/.test(time) ? time.slice(0, 5) : '00:00'
-    // Skiddle is UK-local. Resolve the UTC offset on the event's own date.
-    const utc = Date.parse(raw + 'T' + clock + ':00Z')
+function ukDate(raw, fallbackTime = '00:00') {
+  if (!raw) return null
+  const value = String(raw)
+  // The API uses both date-only and timezone-free local date/time strings.
+  // Explicit Z/offset values already describe an instant and are preserved.
+  const local = value.match(/^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?)?$/)
+  if (local) {
+    const clock = local[2] || (/^\d{2}:\d{2}/.test(fallbackTime) ? fallbackTime.slice(0, 5) : '00:00')
+    const utc = Date.parse(local[1] + 'T' + clock + ':00Z')
+    if (Number.isNaN(utc)) return null
     const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(utc))
     const localHour = Number(parts.find(p => p.type === 'hour').value)
     const offsetHours = (localHour - new Date(utc).getUTCHours() + 24) % 24
     return new Date(utc - offsetHours * 3600000)
   }
-  const date = new Date(raw)
+  const date = new Date(value)
   return Number.isNaN(+date) ? null : date
+}
+
+function eventStart(e) {
+  return ukDate(e.startdate, e.openingtimes?.doorsopen || e.openingtimes?.start)
+}
+
+function eventEnd(e) {
+  if (!e.enddate) return null
+  // A calendar date without an end time must not expire an event at midnight.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(e.enddate)) && !e.openingtimes?.end) return null
+  return ukDate(e.enddate, e.openingtimes?.end)
 }
 
 function fmt(d) { return d.toISOString().split('T')[0] }
 
-module.exports = { fetchEvents, eventStart }
+module.exports = { fetchEvents, eventStart, eventEnd }
