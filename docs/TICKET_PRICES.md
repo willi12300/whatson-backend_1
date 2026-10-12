@@ -21,10 +21,12 @@ Some provider pages do not publish usable prices from Railway's hosting region.
 Liverpool event catalogue; it performs no authenticated checkout or inventory
 queries. `.github/workflows/ticket-prices.yml` refreshes that cache every four hours.
 Blocked Ticketmaster listings stop further requests to that provider for the run.
-Temporary failures retain previously checked records for up to six hours; older
-records expire. Each price records its source URL, currency, offer name and check time.
+Temporary failures retain previously checked records; records older than six hours are labelled last-listed, with their original check time;
+records older than seven days expire. Each price records its source URL, currency, offer name and check time.
 
 Cards look up prices when visible and profiles check them when opened. Browser
 requests are shared and cached for an hour. Tests cover sold-out/group/early-entry
 tiers, unknown/free values, currencies, official-host restrictions, SQL joins and
 mobile card/profile rendering.
+
+Hosted runners currently return no usable new prices for the checked listings. The workflow preserves original timestamps and avoids repeated requests after a provider returns no prices for its first 25 listings. It does not claim retained prices were rechecked. Current cache facts were checked from the execution workspace.

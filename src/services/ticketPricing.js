@@ -6,7 +6,9 @@ try{sourceCache=require('../../data/ticket-prices.json')}catch{}
 
 function cachedListingPrice(url) {
   const price=sourceCache.prices[trustedListing(url)]
-  return price && Date.now()-Date.parse(price.checked_at)<6*3600000 ? price : null
+  if(!price)return null
+  const age=Date.now()-Date.parse(price.checked_at)
+  return age<6*3600000 ? price : age<7*86400000 ? {...price,status:'stale'} : null
 }
 
 function amount(value) {
@@ -112,7 +114,7 @@ async function refreshTicketPrice(event) {
 function withTicketPricing(event) {
   const raw = event._price_source || {}
   const snapshots=[event._ticket_pricing,cachedListingPrice(event.ticket_url)].filter(price=>price?.status==='priced').sort((a,b)=>Date.parse(b.checked_at||0)-Date.parse(a.checked_at||0))
-  const pricing = snapshots[0] || apiPricing(raw.provider,raw.data) || event._ticket_pricing
+  const pricing = snapshots[0] || apiPricing(raw.provider,raw.data) || cachedListingPrice(event.ticket_url) || event._ticket_pricing
   const clean = {...event}; delete clean._price_source; delete clean._ticket_pricing; delete clean._price_checked_at
   if (pricing) {
     clean.pricing = pricing
