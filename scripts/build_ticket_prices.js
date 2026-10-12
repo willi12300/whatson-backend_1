@@ -6,8 +6,14 @@ async function build() {
   const endpoint='https://whatson-backend1-production.up.railway.app/events'
   const venues=[];let offset=0
   const to=new Date(Date.now()+60*86400000).toISOString()
+  async function catalogue(params) {
+    for(let attempt=0;attempt<12;attempt++) {
+      try {return await axios.get(endpoint,{params,timeout:15000})}
+      catch(error){if(attempt===11)throw error;await new Promise(resolve=>setTimeout(resolve,5000))}
+    }
+  }
   for(;;){
-    const {data}=await axios.get(endpoint,{params:{city:'Liverpool',limit:500,offset,to},timeout:15000})
+    const {data}=await catalogue({city:'Liverpool',limit:500,offset,to})
     if(!Array.isArray(data.events))throw new Error('Event catalogue unavailable')
     venues.push(...data.events)
     if(!data.has_more)break
