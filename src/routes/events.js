@@ -45,7 +45,7 @@ router.get('/', async (req, res, next) => {
       }
     }
     if (free === 'true' || type === 'free') where.push(`(e.is_free=true OR COALESCE(e.min_price, 999999)=0 OR LOWER(e.name) LIKE '%free%')`)
-    if (q) { params.push(`%${String(q).toLowerCase()}%`); where.push(`LOWER(CONCAT_WS(' ',e.name,e.description,e.category,e.genre,v.name,v.address)) LIKE $${params.length}`) }
+    if (q) { params.push(`%${String(q).toLowerCase()}%`); where.push(`LOWER(e.name || ' ' || COALESCE(e.description,'') || ' ' || COALESCE(e.category,'') || ' ' || COALESCE(e.genre,'')) LIKE $${params.length}`) }
     if (from) { params.push(from); where.push(`e.starts_at>=$${params.length}`) } else where.push(`e.starts_at>=now()`)
     if (to) { params.push(to); where.push(`e.starts_at<=$${params.length}`) }
     params.push(Math.min(parseInt(limit) || 100, 500))
