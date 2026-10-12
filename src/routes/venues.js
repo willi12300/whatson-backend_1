@@ -288,7 +288,7 @@ router.get('/', async (req, res, next) => {
 
     // Live Google fallback — fires when GPS present and DB has <5 nearby results.
     // Saves to DB via upsertVenue so venues persist, enrich, and appear everywhere.
-    if (lat && lng && result.length < 5 && !search && !category) {
+    if (lat && lng && result.length < 5 && !search && !category && req.query.catalogueOnly !== 'true') {
       try {
         const { fetchVenues: googleFetch } = require('../clients/google')
         const fLat = parseFloat(lat), fLng = parseFloat(lng), fRadius = parseInt(radius)
