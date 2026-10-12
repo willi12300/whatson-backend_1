@@ -6,6 +6,7 @@ const ticketmaster = require('../clients/ticketmaster')
 const { upsertEvent } = require('../services/sync')
 const { matchEventToVenue } = require('../services/matchEvents')
 const logger = require('../utils/logger')
+const { ensureCityEvents } = require('../services/eventRefresh')
 
 function typeWhere(type, idx) {
   const hay = `LOWER(COALESCE(e.category,'') || ' ' || COALESCE(e.genre,'') || ' ' || COALESCE(e.name,'') || ' ' || COALESCE(e.description,''))`
@@ -25,6 +26,9 @@ function typeWhere(type, idx) {
 router.get('/', async (req, res, next) => {
   try {
     const { city, category, type, q, from, to, free, limit = 100 } = req.query
+    const pageSize = Math.max(1, Math.min(parseInt(limit) || 100, 500))
+    const offset = Math.max(0, parseInt(req.query.offset) || 0)
+    const refresh = city ? await ensureCityEvents(city) : { status: 'unsupported' }
     const params = [], where = [`e.status='active'`]
     if (city) { params.push(city); where.push(`v.city=$${params.length}`) }
     if (category) { params.push(category); where.push(`LOWER(e.category)=LOWER($${params.length})`) }
@@ -45,12 +49,20 @@ router.get('/', async (req, res, next) => {
       }
     }
     if (free === 'true' || type === 'free') where.push(`(e.is_free=true OR COALESCE(e.min_price, 999999)=0 OR LOWER(e.name) LIKE '%free%')`)
-    if (q) { params.push(`%${String(q).toLowerCase()}%`); where.push(`LOWER(CONCAT_WS(' ',e.name,e.description,e.category,e.genre,v.name,v.address)) LIKE $${params.length}`) }
+    if (q) {
+      // Artist names commonly use either “&” or “and”; match significant words.
+      const words = String(q).toLowerCase().replace(/&/g, ' ').split(/[^\p{L}\p{N}]+/u).filter(word => word && word !== 'and').slice(0, 12)
+      for (const word of words) {
+        params.push(`%${word}%`)
+        where.push(`LOWER(CONCAT_WS(' ',e.name,e.description,e.category,e.genre,v.name,v.address)) LIKE $${params.length}`)
+      }
+    }
     if (from) { params.push(from); where.push(`e.starts_at>=$${params.length}`) } else where.push(`e.starts_at>=now()`)
     if (to) { params.push(to); where.push(`e.starts_at<=$${params.length}`) }
-    params.push(Math.min(parseInt(limit) || 100, 500))
-    const { rows } = await query(`SELECT e.id,e.name,e.description,e.image_url,e.category,e.genre,e.starts_at,e.ends_at,e.is_free,e.min_price,e.ticket_url,v.id AS venue_id,v.name AS venue_name,v.lat,v.lng,v.address AS venue_address,v.cover_photo AS venue_photo FROM events e LEFT JOIN venues v ON v.id=e.venue_id WHERE ${where.join(' AND ')} ORDER BY e.starts_at ASC LIMIT $${params.length}`, params)
-    let events = rows
+    params.push(pageSize + 1, offset)
+    const { rows } = await query(`SELECT e.id,e.name,e.description,e.image_url,e.category,e.genre,e.starts_at,e.ends_at,e.is_free,e.min_price,e.ticket_url,v.id AS venue_id,v.name AS venue_name,v.lat,v.lng,v.address AS venue_address,v.cover_photo AS venue_photo FROM events e LEFT JOIN venues v ON v.id=e.venue_id WHERE ${where.join(' AND ')} ORDER BY e.starts_at ASC,e.id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`, params)
+    const hasMore = rows.length > pageSize
+    let events = rows.slice(0, pageSize)
 
     // Live fallback: always call Skiddle + TM live when GPS is present and
     // DB has <3 events. Events MUST be real-time — no sync needed.
@@ -58,7 +70,7 @@ router.get('/', async (req, res, next) => {
     const lng = req.query.lng ? parseFloat(req.query.lng) : null
     const hasGPS = lat != null && !isNaN(lat) && lng != null && !isNaN(lng)
 
-    if (hasGPS && events.length < 3) {
+    if (hasGPS && !offset && events.length < 3) {
       try {
         const radiusMiles = Math.min(parseInt(req.query.radius || '30'), 60)
         const cityLabel = req.query.city || null
@@ -108,7 +120,7 @@ router.get('/', async (req, res, next) => {
       }
     }
 
-    res.json({ count: events.length, events: events })
+    res.json({ count: events.length, events: events, has_more: hasMore, next_offset: hasMore ? offset + pageSize : null, refresh })
   } catch (err) { next(err) }
 })
 

@@ -73,7 +73,7 @@ async function upsertEvent(e, venueId, confidence) {
   let eventId, isNew = false
   if (existing.rows.length) {
     eventId = existing.rows[0].id
-    await query(`UPDATE events SET venue_id=$1,name=$2,description=$3,image_url=$4,category=$5,genre=$6,starts_at=$7,ends_at=$8,is_free=$9,min_price=$10,ticket_url=$11,raw_venue_name=$12,raw_address=$13,match_confidence=$14,updated_at=now() WHERE id=$15`,
+    await query(`UPDATE events SET venue_id=$1,name=$2,description=$3,image_url=$4,category=$5,genre=$6,starts_at=$7,ends_at=$8,is_free=$9,min_price=$10,ticket_url=$11,raw_venue_name=$12,raw_address=$13,match_confidence=$14,status=CASE WHEN $7::timestamptz >= now() THEN 'active' ELSE status END,updated_at=now() WHERE id=$15`,
       [venueId,e.name,e.description,e.imageUrl,e.category,e.genre,e.startsAt,e.endsAt,e.isFree,e.minPrice,e.ticketUrl,e.venueName,e.venueAddress,confidence,eventId])
   } else {
     const { rows } = await query(`INSERT INTO events (venue_id,name,description,image_url,category,genre,starts_at,ends_at,is_free,min_price,ticket_url,raw_venue_name,raw_address,match_confidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,

@@ -109,7 +109,10 @@ async function start() {
   } catch (err) {
     logger.error('Migration failed:', err.message)
   }
-  app.listen(config.port, () => logger.info(`🚀 SAPPO API running on port ${config.port}`))
+  app.listen(config.port, () => {
+    logger.info(`🚀 SAPPO API running on port ${config.port}`)
+    require('./services/eventRefresh').startEventRefresh()
+  })
 }
 
 start()
