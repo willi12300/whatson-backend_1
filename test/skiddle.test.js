@@ -45,4 +45,7 @@ test('UK-local doors times use the offset on the event date, including winter', 
   assert.equal(eventStart({ startdate: '2026-12-12T14:00:00' }).toISOString(), '2026-12-12T14:00:00.000Z')
   assert.equal(eventEnd({ enddate: '2026-10-17T23:00:00' }).toISOString(), '2026-10-17T22:00:00.000Z')
   assert.equal(eventEnd({ enddate: '2026-10-17' }), null)
+  assert.equal(eventStart({ startdate: '2026-10-17T14:00:00+00:00', openingtimes: { doorsopen: '14:00' } }).toISOString(), '2026-10-17T13:00:00.000Z')
+  assert.equal(eventEnd({ enddate: '2026-10-17T23:00:00+00:00', openingtimes: { end: '23:00' } }).toISOString(), '2026-10-17T22:00:00.000Z')
+  assert.equal(eventEnd({ startdate: '2026-10-17T23:00:00+00:00', enddate: '2026-10-17T02:00:00+00:00', openingtimes: { doorsopen: '23:00', end: '02:00' } }).toISOString(), '2026-10-18T01:00:00.000Z')
 })

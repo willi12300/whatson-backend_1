@@ -80,13 +80,29 @@ function ukDate(raw, fallbackTime = '00:00') {
 }
 
 function eventStart(e) {
+  const doors = e.openingtimes?.doorsopen || e.openingtimes?.start
+  const day = String(e.startdate || '').slice(0, 10)
+  // Skiddle's explicit doors time is the venue's local wall-clock time.
+  // Some source ISO strings use +00:00 even during British Summer Time.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day) && /^\d{2}:\d{2}/.test(doors || '')) return ukDate(day, doors)
   return ukDate(e.startdate, e.openingtimes?.doorsopen || e.openingtimes?.start)
 }
 
 function eventEnd(e) {
   if (!e.enddate) return null
+  const close = e.openingtimes?.end || e.openingtimes?.doorsclose
+  const day = String(e.enddate).slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day) && /^\d{2}:\d{2}/.test(close || '')) {
+    let end = ukDate(day, close)
+    const start = eventStart(e)
+    if (start && end <= start && day === String(e.startdate).slice(0, 10)) {
+      const nextDay = new Date(day + 'T12:00:00Z'); nextDay.setUTCDate(nextDay.getUTCDate() + 1)
+      end = ukDate(fmt(nextDay), close)
+    }
+    return end
+  }
   // A calendar date without an end time must not expire an event at midnight.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(String(e.enddate)) && !e.openingtimes?.end) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(e.enddate))) return null
   return ukDate(e.enddate, e.openingtimes?.end)
 }
 
