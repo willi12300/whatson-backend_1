@@ -25,3 +25,24 @@ The browser retains neither response in local storage and discards in-flight
 responses after the user changes profiles. The existing introduction remains
 visible while a venue source is checked. Source links and check dates accompany
 venue excerpts. Price/availability data remain separate from descriptive text.
+
+## Catalogue source index
+
+`data/venue-descriptions.json` is a separate index of published excerpts and
+individually checked landmark introductions. `node scripts/build_venue_descriptions.js`
+rebuilds it from the public catalogue, readable official websites and Creative
+Tourist venue listings. No paid API or AI calls are made. Local guide matches
+require the same normalised name plus coordinates within 500 metres; ambiguous
+branches are skipped. Older business guide articles are rejected after a year.
+Pure listing boilerplate and opening schedules are not used as introductions.
+
+The API serves indexed text only when the canonical ID, name, website and address
+still match, and its source check is less than 30 days old. Rebuilds retain the
+original check time for retained entries. An identity change or expiry immediately
+removes that excerpt from use, then the existing official-site lookup may supply
+new text. No catalogue/profile records are overwritten. Source labels distinguish
+venue websites from local guides and Historic England.
+
+Without a useful source or existing description, the app uses only actual cuisine,
+menu or seating facts, or explicitly says a description is unverified. Broad
+search categories such as `park` never become claims about an obelisk or promenade.
