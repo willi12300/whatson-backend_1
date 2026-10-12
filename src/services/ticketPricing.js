@@ -1,5 +1,6 @@
 const axios = require('axios')
 const { query } = require('../db/pool')
+const { config } = require('../config')
 
 function amount(value) {
   if (value == null || value === '' || typeof value === 'boolean') return null
@@ -71,12 +72,28 @@ async function refreshTicketPrice(event) {
   if (inFlight.has(event.id)) return inFlight.get(event.id)
   const work = runLimited(async () => {
     const url = trustedListing(event.ticket_url)
-    let pricing = {status:'unavailable',checked_at:new Date().toISOString()}
+    let pricing = {status:'unavailable',reason:'no_published_price',checked_at:new Date().toISOString()}
     if (url) {
       try {
-        const response = await axios.get(url,{timeout:6000,maxRedirects:0,maxContentLength:2*1024*1024,headers:{'User-Agent':'SAPPO/1.0 (event ticket price lookup)'}})
+        let target=url,response
+        for(let redirects=0;redirects<4;redirects++) {
+          response=await axios.get(target,{timeout:6000,maxRedirects:0,maxContentLength:2*1024*1024,validateStatus:status=>status<400,headers:{'User-Agent':'SAPPO/1.0 (event ticket price lookup)'}})
+          if(response.status<300)break
+          target=trustedListing(new URL(response.headers.location,target).href)
+          if(!target)throw new Error('unsupported_redirect')
+        }
         pricing = pagePricing(String(response.data),url) || pricing
-      } catch {} // Respect unavailable/blocked listings; never invent a price.
+      } catch(error) {pricing.reason=error.response?.status?'listing_http_'+error.response.status:'listing_unavailable'}
+      // The provider's detail API may publish a price omitted from search results.
+      const skiddleId=new URL(url).hostname.includes('skiddle.com') && new URL(url).pathname.match(/\/(\d+)\/?$/)?.[1]
+      if(pricing.status==='unavailable' && skiddleId && config.skiddle.key) {
+        try {
+          const response=await axios.get(`https://www.skiddle.com/api/v1/events/${skiddleId}/`,{params:{api_key:config.skiddle.key},timeout:6000})
+          const raw=Array.isArray(response.data.results)?response.data.results[0]:response.data.results
+          const fromApi=apiPricing('skiddle',raw||{})
+          if(fromApi)pricing={...fromApi,source_url:url,checked_at:new Date().toISOString()}
+        }catch{} // No key-bearing request details are logged or returned.
+      }
     }
     await query('INSERT INTO event_ticket_prices(event_id,pricing,checked_at) VALUES($1,$2,now()) ON CONFLICT(event_id) DO UPDATE SET pricing=EXCLUDED.pricing,checked_at=now()', [event.id,JSON.stringify(pricing)])
     return pricing
@@ -98,6 +115,6 @@ function withTicketPricing(event) {
 
 const priceSelect = `ep.pricing AS _ticket_pricing,ep.checked_at AS _price_checked_at,
  (SELECT jsonb_build_object('provider',es.provider,'data',jsonb_build_object('MinPrice',es.raw->'MinPrice','minprice',es.raw->'minprice','entryprice',es.raw->'entryprice','priceRanges',es.raw->'priceRanges')) FROM event_sources es WHERE es.event_id=e.id LIMIT 1) AS _price_source`
-const priceJoin = `LEFT JOIN event_ticket_prices ep ON ep.event_id=e.id AND ep.checked_at > now()-interval '6 hours'`
+const priceJoin = `LEFT JOIN event_ticket_prices ep ON ep.event_id=e.id AND ep.checked_at > now()-interval '6 hours' AND (ep.pricing->>'status'<>'unavailable' OR ep.pricing ? 'reason')`
 
 module.exports = { amount,apiPricing,pagePricing,trustedListing,refreshTicketPrice,withTicketPricing,priceSelect,priceJoin }
