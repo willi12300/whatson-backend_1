@@ -7,6 +7,7 @@ const { upsertEvent } = require('../services/sync')
 const { matchEventToVenue } = require('../services/matchEvents')
 const logger = require('../utils/logger')
 const { ensureCityEvents } = require('../services/eventRefresh')
+const { refreshTicketPrice,withTicketPricing,priceSelect,priceJoin } = require('../services/ticketPricing')
 
 function typeWhere(type, idx) {
   const hay = `LOWER(COALESCE(e.category,'') || ' ' || COALESCE(e.genre,'') || ' ' || COALESCE(e.name,'') || ' ' || COALESCE(e.description,''))`
@@ -60,9 +61,9 @@ router.get('/', async (req, res, next) => {
     if (from) { params.push(from); where.push(`e.starts_at>=$${params.length}`) } else where.push(`e.starts_at>=now()`)
     if (to) { params.push(to); where.push(`e.starts_at<=$${params.length}`) }
     params.push(pageSize + 1, offset)
-    const { rows } = await query(`SELECT e.id,e.name,e.description,e.image_url,e.category,e.genre,e.starts_at,e.ends_at,e.is_free,e.min_price,e.ticket_url,v.id AS venue_id,v.name AS venue_name,v.lat,v.lng,v.address AS venue_address,v.cover_photo AS venue_photo FROM events e LEFT JOIN venues v ON v.id=e.venue_id WHERE ${where.join(' AND ')} ORDER BY e.starts_at ASC,e.id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`, params)
+    const { rows } = await query(`SELECT e.id,e.name,e.description,e.image_url,e.category,e.genre,e.starts_at,e.ends_at,e.is_free,e.min_price,e.ticket_url,${priceSelect},v.id AS venue_id,v.name AS venue_name,v.lat,v.lng,v.address AS venue_address,v.cover_photo AS venue_photo FROM events e LEFT JOIN venues v ON v.id=e.venue_id ${priceJoin} WHERE ${where.join(' AND ')} ORDER BY e.starts_at ASC,e.id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`, params)
     const hasMore = rows.length > pageSize
-    let events = rows.slice(0, pageSize)
+    let events = rows.slice(0, pageSize).map(withTicketPricing)
 
     // Live fallback: always call Skiddle + TM live when GPS is present and
     // DB has <3 events. Events MUST be real-time — no sync needed.
@@ -124,12 +125,26 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+router.get('/:id/pricing', async (req,res,next) => {
+  try {
+    const {rows}=await query(`SELECT e.id,e.ticket_url,e.min_price,e.is_free,${priceSelect} FROM events e ${priceJoin} WHERE e.id=$1`,[req.params.id])
+    if(!rows.length) return res.status(404).json({error:'Event not found'})
+    const event=rows[0]
+    if(!event._price_checked_at) {
+      const price=await refreshTicketPrice(event)
+      event._ticket_pricing=price
+    }
+    const priced=withTicketPricing(event)
+    res.json({min_price:priced.min_price,is_free:priced.is_free,pricing:priced.pricing||{status:'unavailable'}})
+  }catch(error){next(error)}
+})
+
 router.get('/:id', async (req, res, next) => {
   try {
-    const { rows } = await query(`SELECT e.*,v.name AS venue_name,v.lat,v.lng,v.address AS venue_address,v.cover_photo AS venue_photo FROM events e LEFT JOIN venues v ON v.id=e.venue_id WHERE e.id=$1`, [req.params.id])
+    const { rows } = await query(`SELECT e.*,${priceSelect},v.name AS venue_name,v.lat,v.lng,v.address AS venue_address,v.cover_photo AS venue_photo FROM events e LEFT JOIN venues v ON v.id=e.venue_id ${priceJoin} WHERE e.id=$1`, [req.params.id])
     if (!rows.length) return res.status(404).json({ error: 'Event not found' })
     const sources = await query(`SELECT provider,provider_id FROM event_sources WHERE event_id=$1`, [req.params.id])
-    res.json({ ...rows[0], sources: sources.rows })
+    res.json({ ...withTicketPricing(rows[0]), sources: sources.rows })
   } catch (err) { next(err) }
 })
 

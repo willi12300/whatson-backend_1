@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS event_ticket_prices (
+  event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+  pricing JSONB NOT NULL,
+  checked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

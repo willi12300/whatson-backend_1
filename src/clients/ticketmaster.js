@@ -1,4 +1,5 @@
 const axios = require('axios')
+const { apiPricing } = require('../services/ticketPricing')
 const { config } = require('../config')
 const { sleep } = require('../utils/helpers')
 const logger = require('../utils/logger')
@@ -58,8 +59,8 @@ async function fetchEvents(lat, lng, radiusMiles = 5, daysAhead = 30, opts = {})
           imageUrl: e.images?.find(i => i.width > 600)?.url || e.images?.[0]?.url || null,
           startsAt: new Date(start),
           endsAt: null,
-          isFree: false,
-          minPrice: e.priceRanges?.[0]?.min || null,
+          isFree: apiPricing('ticketmaster',e)?.min_price === 0,
+          minPrice: apiPricing('ticketmaster',e)?.min_price ?? null,
           ticketUrl: e.url || null,
           category: e.classifications?.[0]?.segment?.name || null,
           genre: e.classifications?.[0]?.genre?.name || null,
