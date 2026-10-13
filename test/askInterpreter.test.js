@@ -28,7 +28,7 @@ test('missing keys and malformed model replies still support basic requests hone
 
 test('a quota-exhausted model switches to the compatible backup, and stays off the exhausted model during cooldown',async()=>{
  const called=[],i=createInterpreter({key:()=> 'test-key',log:()=>{},post:async(url)=>{called.push(url);if(url.includes('/gemini-2.5-flash:'))throw quotaError();return {data:{candidates:[{content:{parts:[{text:'{"roles":["coffee"],"minutes":180}'}]}}]}}}})
- const first=await i.interpret(request);assert.equal(first.mode,'ai');assert.equal(first.model,'gemini-2.5-flash-lite');assert.equal(called.length,2)
+ const first=await i.interpret(request);assert.equal(first.mode,'ai');assert.equal(first.model,'gemini-3.1-flash-lite');assert.equal(called.length,2)
  const second=await i.interpret({...request,message:'Coffee then a walk'});assert.equal(second.mode,'ai');assert.equal(called.length,3);assert(called[2].includes('flash-lite'));assert.equal(i.status().state,'ready');assert.equal(i.status().modelsInCooldown[0].kind,'quota_exceeded')
 })
 test('failover does not exceed the shared daily attempt budget',async()=>{

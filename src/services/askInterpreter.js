@@ -29,7 +29,7 @@ function basicIntent(message,history=[]){
 }
 
 function createInterpreter({post=axios.post,key=()=>process.env.GEMINI_API_KEY,now=Date.now,log=logger.warn}={}){
- const models=['gemini-2.5-flash','gemini-2.5-flash-lite'],failoverKinds=new Set(['quota_exceeded','provider_unavailable','timeout','connection_error','unsupported_model'])
+ const models=['gemini-2.5-flash','gemini-3.1-flash-lite'],failoverKinds=new Set(['quota_exceeded','provider_unavailable','timeout','connection_error','unsupported_model'])
  let last={state:'not_checked',observedAt:null},day='',attempts=0
  const failures=new Map(),cache=new Map(),inFlight=new Map()
  const dailyLimit=()=>Math.max(0,Math.min(500,Number(process.env.ASK_SAPPO_DAILY_LIMIT??100)||0))
@@ -50,7 +50,7 @@ function createInterpreter({post=axios.post,key=()=>process.env.GEMINI_API_KEY,n
      try{
       const response=await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{
        systemInstruction:{parts:[{text:SYSTEM}]},contents:[{role:'user',parts:[{text:JSON.stringify({earlierRequests:history,request:message,availableMinutes:minutes})}]}],
-       generationConfig:{responseMimeType:'application/json',maxOutputTokens:400,temperature:0.1,thinkingConfig:{thinkingBudget:0}}
+       generationConfig:{responseMimeType:'application/json',maxOutputTokens:400,temperature:0.1,thinkingConfig:model.startsWith('gemini-2.')?{thinkingBudget:0}:{thinkingLevel:'minimal'}}
       },{headers:{'x-goog-api-key':key()},timeout:15000})
       let raw
       try{raw=JSON.parse(response.data?.candidates?.[0]?.content?.parts?.filter(p=>!p.thought).map(p=>p.text||'').join('')||'');if(!raw||!Array.isArray(raw.roles))throw Error('invalid')}catch{throw Object.assign(new Error('Invalid model response'),{code:'BAD_JSON'})}
