@@ -37,3 +37,7 @@ test('a pub respin keeps the pub type, rather than substituting a bar',async()=>
  const p=await buildOuting({...deps,venues:[venue(11,'Original pub','pub'),venue(12,'A bar','bar'),venue(13,'Another pub','pub')],intent:cleanIntent({roles:['drink'],minutes:180}),excludedIds:[11],replacementCategory:'pub'})
  assert.equal(p.stops[0].id,13)
 })
+test('respin avoids the same physical venue under another catalogue ID',async()=>{
+ const p=await buildOuting({...deps,venues:[...venues,venue(14,'The Sefton Park','park',53.407,-2.99),venue(8,'Princes Park','park',53.406,-2.9895)],intent:cleanIntent({roles:['walk'],minutes:180}),excludedIds:[2],replacementCategory:'park'})
+ assert.equal(p.stops[0].id,8)
+})

@@ -1,5 +1,6 @@
 const {distanceMeters} = require('../utils/helpers')
 const {evaluateOpeningHours} = require('./openingHours')
+const {sameVenue}=require('./venueIdentity')
 const ROLES = ['coffee','walk','sunset','food','culture','drink']
 const LABELS = {coffee:'Coffee first',walk:'Stretch your legs',sunset:'A sunset stop',food:'Something to eat',culture:'A little culture',drink:'A drink to finish'}
 const WHY = {coffee:'A café stop for your outing.',walk:'An outdoor place to spend some time walking.',sunset:'A waterfront or open-view stop. Clouds and the exact viewpoint affect what you’ll see.',food:'A food stop along the way.',culture:'Time for a museum or gallery.',drink:'A pub or bar stop along the way.'}
@@ -28,6 +29,7 @@ function weatherFor(w,at){
 async function buildOuting({venues,intent,startAt,origin,weather,weatherAt,walkingRoute,lockedIds={},excludedIds=[],replacementCategory=null}) {
   const stops=[],missing=[],used=new Set(),start=new Date(startAt),end=start.getTime()+intent.minutes*60000
   const excluded=new Set(excludedIds.map(String)),reserved=new Set(Object.values(lockedIds).map(String))
+  const rejected=venues.filter(v=>excluded.has(String(v.id)))
   let cursor=start.getTime(),previous=origin
   const sunset=usableWeather(weather)?(weather.sunsets||[]).map(x=>new Date(x)).find(x=>x>start&&x.getTime()<start.getTime()+24*3600000):null
   for(const role of intent.roles){
@@ -36,6 +38,7 @@ async function buildOuting({venues,intent,startAt,origin,weather,weatherAt,walki
     const duration=role==='walk'?(intent.longWalk?80:45):role==='coffee'?35:role==='sunset'?30:60
     const candidates=venues.filter(v=>!used.has(String(v.id))&&v.lat!=null&&v.lng!=null&&matches(v,role)&&!['CLOSED_PERMANENTLY','CLOSED_TEMPORARILY'].includes(v.business_status))
       .filter(v=>lockedId?String(v.id)===String(lockedId):!excluded.has(String(v.id))&&!reserved.has(String(v.id)))
+      .filter(v=>lockedId||!rejected.some(r=>sameVenue(v,r)||(r.google_place_id&&r.google_place_id===v.google_place_id)))
       .filter(v=>lockedId||!replacementCategory||v.category_slug===replacementCategory)
       .filter(v=>role!=='walk'||!intent.longWalk||/sefton park|princes park|otterspool promenade|waterfront.*promenade|liverpool waterfront|everton park|festival gardens|crosby beach|newsham park|calderstones park/i.test(v.name))
       .map(v=>({v,d:distanceMeters(previous.lat,previous.lng,Number(v.lat),Number(v.lng))}))

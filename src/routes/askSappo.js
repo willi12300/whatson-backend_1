@@ -19,7 +19,7 @@ router.post('/respin',async(req,res,next)=>{
   if(!Number.isFinite(origin.lat)||!Number.isFinite(origin.lng)||Math.abs(origin.lat-53.4084)>0.15||Math.abs(origin.lng+2.9916)>0.25)return res.status(400).json({error:'This outing needs a starting point around Liverpool.'})
   const target=stops.find(s=>String(s.id)===String(b.targetId)),intent=cleanIntent({...p.intent,roles:stops.map(s=>s.role)})
   if(!target||intent.roles.length!==stops.length||new Set(stops.map(s=>String(s.id))).size!==stops.length)return res.status(400).json({error:'Choose a valid stop to swap.'})
-  const {rows}=await query("SELECT id,name,address,category_slug,lat,lng,opening_hours,business_status,rating,rating_count,cover_photo FROM venues WHERE LOWER(city)='liverpool' AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY rating_count DESC NULLS LAST LIMIT 5000")
+  const {rows}=await query("SELECT id,name,address,category_slug,lat,lng,google_place_id,opening_hours,business_status,rating,rating_count,cover_photo FROM venues WHERE LOWER(city)='liverpool' AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY rating_count DESC NULLS LAST LIMIT 5000")
   const current=stops.map(s=>rows.find(v=>String(v.id)===String(s.id)))
   if(current.some((v,i)=>!v||!matches(v,stops[i].role)))return res.status(409).json({error:'A stop in this outing has changed. Make a fresh plan before swapping it.'})
   const targetVenue=current[stops.indexOf(target)],lockedIds=Object.fromEntries(stops.filter(s=>s!==target).map(s=>[s.role,s.id]))
@@ -49,7 +49,7 @@ router.post('/',async(req,res,next)=>{
   const understood=await interpret({message,history,minutes:b.minutes||180}),intent=understood.intent
   if(!intent||!intent.roles.length)return res.json({type:'clarify',mode:understood.mode,say:understood.mode==='basic'?'The AI is taking a breather. I can still help with a simple coffee, walk and sunset outing—try that, or come back for a more detailed request.':'For this first trial, try coffee, food, a park walk, culture, drinks or sunset. Events will come later.'})
   intent.minutes=Math.max(60,Math.min(360,Number(b.minutes)||intent.minutes))
-  const {rows}=await query("SELECT id,name,address,category_slug,lat,lng,opening_hours,business_status,rating,rating_count,cover_photo FROM venues WHERE LOWER(city)='liverpool' AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY rating_count DESC NULLS LAST LIMIT 2000")
+  const {rows}=await query("SELECT id,name,address,category_slug,lat,lng,google_place_id,opening_hours,business_status,rating,rating_count,cover_photo FROM venues WHERE LOWER(city)='liverpool' AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY rating_count DESC NULLS LAST LIMIT 2000")
   const weather=await getWeather(origin.lat,origin.lng).catch(()=>null)
   const plan=await buildOuting({venues:rows,intent,startAt:start,origin,weather,weatherAt:getWeather,walkingRoute:(a,b)=>config.google.key?routeFor('walking',a,b):Promise.resolve(null)})
   res.json({type:'plan',...plan,intent,origin,mode:understood.mode,aiProvider:understood.provider,originLabel:b.lat!=null?'Your location':'Liverpool city centre',say:understood.mode==='basic'?'The AI is taking a breather, so this is a basic plan using SAPPO’s real places, timings and forecast.':'Here’s a starting point. We can tweak it together.'})
