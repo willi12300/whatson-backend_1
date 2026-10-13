@@ -41,3 +41,23 @@ test('respin avoids the same physical venue under another catalogue ID',async()=
  const p=await buildOuting({...deps,venues:[...venues,venue(14,'The Sefton Park','park',53.407,-2.99),venue(8,'Princes Park','park',53.406,-2.9895)],intent:cleanIntent({roles:['walk'],minutes:180}),excludedIds:[2],replacementCategory:'park'})
  assert.equal(p.stops[0].id,8)
 })
+test('journey ceilings use routed times and try another candidate when the nearest is too slow',async()=>{
+ const calls=[]
+ const p=await buildOuting({...deps,venues:[venue(20,'Nearby cafe','cafe'),venue(21,'Further cafe','cafe',53.41,-2.99)],intent:cleanIntent({roles:['coffee'],minutes:180}),travelPreference:{mode:'driving',maxMinutes:15},travelRoute:async(mode,a,b,departure)=>{calls.push({mode,departure});return {durationSeconds:b.id===20?960:900,distanceMeters:2000}}})
+ assert.equal(p.stops[0].id,21);assert.equal(p.stops[0].travelMinutes,15);assert.equal(p.stops[0].travelKind,'google_driving');assert.match(p.stops[0].directionsUrl,/travelmode=driving/);assert.equal(calls[0].departure,new Date(startAt).toISOString());assert.equal(calls[0].mode,'driving')
+})
+test('public transport needs a real route, while walking estimates obey the ceiling',async()=>{
+ for(const mode of ['transit','driving']){
+  const p=await buildOuting({...deps,venues,intent:cleanIntent({roles:['coffee']}),travelPreference:{mode,maxMinutes:60},travelRoute:async()=>null})
+  assert.equal(p.stops.length,0);assert.match(p.missing[0],/checked/)
+ }
+ const p=await buildOuting({...deps,venues:[venue(22,'Cafe','cafe',53.43,-2.99)],intent:cleanIntent({roles:['coffee']}),travelPreference:{mode:'walking',maxMinutes:15},travelRoute:async()=>null})
+ assert.equal(p.stops.length,0)
+})
+test('travel limit applies to every respin leg but does not cap exploring a park',async()=>{
+ const calls=[]
+ const p=await buildOuting({...deps,venues:[...venues,venue(8,'Princes Park','park',53.406,-2.9895)],intent:cleanIntent({roles:['coffee','walk','sunset'],longWalk:true,minutes:300}),lockedIds:{coffee:1,sunset:3},excludedIds:[2],replacementCategory:'park',travelPreference:{mode:'transit',maxMinutes:15},travelRoute:async(mode,a,b,departure)=>{calls.push(departure);return {durationSeconds:600,distanceMeters:1500}}})
+ assert.deepEqual(p.stops.map(s=>s.id),[1,8,3]);assert.equal(p.stops[1].durationMinutes,80);assert(p.stops.every(s=>s.travelMinutes<=15&&s.travelKind==='google_transit'));assert.deepEqual(p.travelPreference,{mode:'transit',maxMinutes:15});assert.equal(calls[1],new Date(new Date(startAt).getTime()+45*60000).toISOString())
+ const failed=await buildOuting({...deps,venues,intent:cleanIntent({roles:['coffee','walk'],minutes:300}),lockedIds:{coffee:1,walk:2},travelPreference:{mode:'walking',maxMinutes:15},travelRoute:async(mode,a,b)=>({durationSeconds:b.id===2?901:300})})
+ assert.equal(failed.stops.some(s=>s.role==='walk'),false)
+})

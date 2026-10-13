@@ -4,7 +4,7 @@ const {query}=require('../db/pool')
 const {getWeather}=require('../clients/weather')
 const {routeFor}=require('../clients/routes')
 const {config}=require('../config')
-const {buildOuting,cleanIntent,matches}=require('../services/askSappo')
+const {buildOuting,cleanIntent,cleanTravel,matches}=require('../services/askSappo')
 const {interpret,status,availableModels}=require('../services/askInterpreter')
 // Reading diagnostics does not call Gemini or disclose credentials/prompts.
 router.get('/status',(req,res)=>res.json({provider:'Gemini',...status()}))
@@ -30,11 +30,11 @@ router.post('/respin',async(req,res,next)=>{
   // Try at most three candidates; keep every other venue fixed and recheck all
   // legs/hours. No Gemini call is needed to replace a known activity.
   for(let attempt=0;attempt<3;attempt++){
-   plan=await buildOuting({venues:rows,intent,startAt:start,origin,weather,weatherAt:getWeather,walkingRoute:(a,b)=>config.google.key?routeFor('walking',a,b):Promise.resolve(null),lockedIds,excludedIds,replacementCategory:targetVenue.category_slug})
+   plan=await buildOuting({venues:rows,intent,startAt:start,origin,weather,weatherAt:getWeather,travelPreference:cleanTravel(p.travelPreference),travelRoute:(mode,a,b,departure)=>config.google.key?routeFor(mode,a,b,departure):Promise.resolve(null),lockedIds,excludedIds,replacementCategory:targetVenue.category_slug})
    if(plan.stops.length===stops.length&&plan.stops.every(s=>s.role===target.role||String(s.id)===String(lockedIds[s.role])))return res.json({type:'plan',...plan,intent,origin,mode:p.mode==='basic'?'basic':'ai',aiProvider:p.mode==='basic'?null:'Gemini',originLabel:p.originLabel==='Your location'?'Your location':'Liverpool city centre',say:'A different stop, with the rest of your outing kept in place. I’ve checked the timings again.'})
    const replacement=plan.stops.find(s=>s.role===target.role);if(!replacement)break;excludedIds.push(replacement.id)
   }
-  return res.status(409).json({error:'I couldn’t find another suitable place that fits this outing. Your original plan is still here—try more time or less walking.'})
+  return res.status(409).json({error:'I couldn’t find another suitable place that fits this outing. Your original plan is still here—try more time or a wider travel limit.'})
  }catch(e){next(e)}
 })
 router.use(rateLimit({windowMs:60*1000,max:8,standardHeaders:true,legacyHeaders:false,message:{error:'Give SAPPO a moment, then try again.'},validate:{trustProxy:false}}))
@@ -53,7 +53,7 @@ router.post('/',async(req,res,next)=>{
   intent.minutes=Math.max(60,Math.min(360,Number(b.minutes)||intent.minutes))
   const {rows}=await query("SELECT id,name,address,category_slug,lat,lng,google_place_id,opening_hours,business_status,rating,rating_count,cover_photo FROM venues WHERE LOWER(city)='liverpool' AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY rating_count DESC NULLS LAST LIMIT 2000")
   const weather=await getWeather(origin.lat,origin.lng).catch(()=>null)
-  const plan=await buildOuting({venues:rows,intent,startAt:start,origin,weather,weatherAt:getWeather,walkingRoute:(a,b)=>config.google.key?routeFor('walking',a,b):Promise.resolve(null)})
+  const plan=await buildOuting({venues:rows,intent,startAt:start,origin,weather,weatherAt:getWeather,travelPreference:cleanTravel(b.travelPreference),travelRoute:(mode,a,b,departure)=>config.google.key?routeFor(mode,a,b,departure):Promise.resolve(null)})
   res.json({type:'plan',...plan,intent,origin,mode:understood.mode,aiProvider:understood.provider,originLabel:b.lat!=null?'Your location':'Liverpool city centre',say:understood.mode==='basic'?'The AI is taking a breather, so this is a basic plan using SAPPO’s real places, timings and forecast.':'Here’s a starting point. We can tweak it together.'})
  }catch(e){next(e)}
 })

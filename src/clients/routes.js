@@ -15,7 +15,7 @@ const MODE_MAP = {
 }
 
 // Get travel info for ONE mode between two coords.
-async function routeFor(mode, from, to) {
+async function routeFor(mode, from, to, departureTime) {
   const travelMode = MODE_MAP[mode]
   if (!travelMode) return null
   const body = {
@@ -23,6 +23,7 @@ async function routeFor(mode, from, to) {
     destination: { location: { latLng: { latitude: to.lat, longitude: to.lng } } },
     travelMode,
   }
+  if (departureTime && ['TRANSIT','DRIVE'].includes(travelMode)) body.departureTime = departureTime
   // routing preference only valid for DRIVE/TWO_WHEELER
   if (travelMode === 'DRIVE') body.routingPreference = 'TRAFFIC_AWARE'
 

@@ -26,7 +26,12 @@ function weatherFor(w,at){
   if(!h)return null
   return {time:h.time,temp:h.temp,condition:h.condition,rainChance:h.rainChance,windSpeed:h.windSpeed,source:'Open-Meteo',fetchedAt:w.fetched_at}
 }
-async function buildOuting({venues,intent,startAt,origin,weather,weatherAt,walkingRoute,lockedIds={},excludedIds=[],replacementCategory=null}) {
+function cleanTravel(raw) {
+  return {mode:['walking','transit','driving'].includes(raw?.mode)?raw.mode:'walking',maxMinutes:[15,30,60].includes(Number(raw?.maxMinutes))?Number(raw.maxMinutes):30}
+}
+async function buildOuting({venues,intent,startAt,origin,weather,weatherAt,walkingRoute,travelRoute,travelPreference,lockedIds={},excludedIds=[],replacementCategory=null}) {
+  const travelSettings=cleanTravel(travelPreference),travelMode=travelSettings.mode
+  if(travelMode==='walking'&&intent.lessWalking)travelSettings.maxMinutes=Math.min(travelSettings.maxMinutes,15)
   const stops=[],missing=[],used=new Set(),start=new Date(startAt),end=start.getTime()+intent.minutes*60000
   const excluded=new Set(excludedIds.map(String)),reserved=new Set(Object.values(lockedIds).map(String))
   const rejected=venues.filter(v=>excluded.has(String(v.id)))
@@ -42,28 +47,30 @@ async function buildOuting({venues,intent,startAt,origin,weather,weatherAt,walki
       .filter(v=>lockedId||!replacementCategory||v.category_slug===replacementCategory)
       .filter(v=>role!=='walk'||!intent.longWalk||/sefton park|princes park|otterspool promenade|waterfront.*promenade|liverpool waterfront|everton park|festival gardens|crosby beach|newsham park|calderstones park/i.test(v.name))
       .map(v=>({v,d:distanceMeters(previous.lat,previous.lng,Number(v.lat),Number(v.lng))}))
-      .filter(x=>x.d<=(intent.lessWalking?1600:5000))
+      .filter(x=>x.d<=travelSettings.maxMinutes*(travelMode==='walking'?75:travelMode==='driving'?1000:600))
       .sort((a,b)=>a.d-b.d).slice(0,40)
     let chosen
-    for(const item of candidates){
-      const travel=Math.max(2,Math.ceil(item.d*1.3/75)),arrival=role==='sunset'?Math.max(cursor+travel*60000,sunset.getTime()-25*60000):cursor+travel*60000
+    // Check a bounded shortlist. The route, not straight-line distance, decides
+    // whether a leg fits. Never invent driving or public transport schedules.
+    const shortlist=candidates.map(item=>({...item,score:item.d/1000-((Number(item.v.rating)||3.8)*Math.min(Number(item.v.rating_count)||0,100)/100)*0.15})).sort((a,b)=>a.score-b.score).slice(0,8)
+    for(const item of shortlist){
+      let route=null
+      try{route=travelRoute?await travelRoute(travelMode,previous,item.v,new Date(cursor).toISOString()):travelMode==='walking'?await walkingRoute?.(previous,item.v):null}catch{}
+      const routed=Number(route?.durationSeconds)>0
+      if(!routed&&travelMode!=='walking')continue
+      const travel=routed?Math.ceil(route.durationSeconds/60):Math.max(2,Math.ceil(item.d*1.3/75))
+      if(travel>travelSettings.maxMinutes)continue
+      const arrival=role==='sunset'?Math.max(cursor+travel*60000,sunset.getTime()-25*60000):cursor+travel*60000
       const availability=evaluateOpeningHours(item.v.opening_hours,new Date(arrival),{city:'Liverpool',durationMinutes:duration})
-      if(availability.status==='closed_at_arrival'||arrival+duration*60000>end)continue
-      const score=item.d/1000+(availability.eligible?0:2)-((Number(item.v.rating)||3.8)*Math.min(Number(item.v.rating_count)||0,100)/100)*0.15
-      if(!chosen||score<chosen.score)chosen={...item,score,travel,arrival,availability}
+      if(availability.status==='closed_at_arrival'||arrival+duration*60000>end||(role==='sunset'&&arrival>sunset.getTime()-10*60000))continue
+      chosen={...item,route,routed,travel,arrival,availability};break
     }
-    if(!chosen){missing.push(`I couldn’t find a suitable ${role} stop within your time and walking range.`);continue}
-    let route=null
-    try{route=await walkingRoute(previous,chosen.v)}catch{}
-    const routed=Number(route?.durationSeconds)>0
-    const travel=routed?Math.ceil(route.durationSeconds/60):chosen.travel
-    const arrival=role==='sunset'?Math.max(cursor+travel*60000,sunset.getTime()-25*60000):cursor+travel*60000
-    const availability=evaluateOpeningHours(chosen.v.opening_hours,new Date(arrival),{city:'Liverpool',durationMinutes:duration})
-    if(availability.status==='closed_at_arrival'||arrival+duration*60000>end||(role==='sunset'&&arrival>sunset.getTime()-10*60000)){missing.push(`The ${role} stop wouldn’t fit once travel time was checked.`);continue}
+    if(!chosen){missing.push(`I couldn’t find a suitable ${role} stop within your time and ${travelSettings.maxMinutes}-minute journey limit${travelMode==='walking'?'.':' with a checked '+(travelMode==='transit'?'public transport':'driving')+' route. Try another mode or a wider travel limit.'}`);continue}
+    const {route,routed,travel,arrival,availability}=chosen
     const v=chosen.v,wx=await weatherAt(Number(v.lat),Number(v.lng)).catch(()=>null)
-    stops.push({id:v.id,venueId:v.id,name:v.name,address:v.address,category_slug:v.category_slug,cover_photo:v.cover_photo,rating:v.rating,rating_count:v.rating_count,lat:Number(v.lat),lng:Number(v.lng),role,label:LABELS[role],why:role==='walk'?'Time to explore this outdoor area. This is time at the place, rather than a mapped walking circuit.':WHY[role],arrivalAt:new Date(arrival).toISOString(),durationMinutes:duration,travelMinutes:travel,freeMinutes:Math.max(0,Math.floor((arrival-cursor)/60000)-travel),travelKind:routed?'google_walking':'estimate',distanceMeters:routed?route.distanceMeters:Math.round(chosen.d),hoursStatus:availability.eligible?'published_hours':'check_hours',weather:weatherFor(wx,new Date(arrival)),sunsetAt:role==='sunset'?sunset.toISOString():null,directionsUrl:`https://www.google.com/maps/dir/?api=1&origin=${previous.lat},${previous.lng}&destination=${v.lat},${v.lng}&travelmode=walking`})
+    stops.push({id:v.id,venueId:v.id,name:v.name,address:v.address,category_slug:v.category_slug,cover_photo:v.cover_photo,rating:v.rating,rating_count:v.rating_count,lat:Number(v.lat),lng:Number(v.lng),role,label:LABELS[role],why:role==='walk'?'Time to explore this outdoor area. This is time at the place, rather than a mapped walking circuit.':WHY[role],arrivalAt:new Date(arrival).toISOString(),durationMinutes:duration,travelMinutes:travel,freeMinutes:Math.max(0,Math.floor((arrival-cursor)/60000)-travel),travelMode,travelKind:routed?`google_${travelMode}`:'estimate',distanceMeters:routed?route.distanceMeters:Math.round(chosen.d),hoursStatus:availability.eligible?'published_hours':'check_hours',weather:weatherFor(wx,new Date(arrival)),sunsetAt:role==='sunset'?sunset.toISOString():null,directionsUrl:`https://www.google.com/maps/dir/?api=1&origin=${previous.lat},${previous.lng}&destination=${v.lat},${v.lng}&travelmode=${travelMode}`})
     cursor=arrival+duration*60000;previous={lat:Number(v.lat),lng:Number(v.lng)};used.add(String(v.id))
   }
-  return {stops,missing,title:'Your Liverpool outing',summary:stops.length?'A few stops that fit what you fancy. Open each profile before you head out.':'Let’s adjust this outing—try a different time or a shorter request.',startAt:start.toISOString(),finishAt:new Date(cursor).toISOString(),timezone:'Europe/London'}
+  return {stops,missing,travelPreference:travelSettings,title:'Your Liverpool outing',summary:stops.length?'A few stops that fit what you fancy. Open each profile before you head out.':'Let’s adjust this outing—try a different time or a shorter request.',startAt:start.toISOString(),finishAt:new Date(cursor).toISOString(),timezone:'Europe/London'}
 }
-module.exports={cleanIntent,matches,buildOuting,weatherFor}
+module.exports={cleanTravel,cleanIntent,matches,buildOuting,weatherFor}
