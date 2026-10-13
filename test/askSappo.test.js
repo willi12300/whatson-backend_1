@@ -21,3 +21,6 @@ test('no imaginary sunsets or weather: unavailable/stale forecast and short outi
  assert.equal(weatherFor({...weather,meta:{source:'fallback'}},new Date(startAt)),null);assert.equal(weatherFor({...weather,meta:{source:'live',stale:true}},new Date(startAt)),null)
  const p=await buildOuting({...deps,venues,intent:cleanIntent({roles:['sunset'],minutes:90})});assert.equal(p.stops.length,0);assert.match(p.missing[0],/Sunset falls outside/)
 })
+test('long walks favour substantial parks or waterfronts, rather than small city gardens',async()=>{
+ const p=await buildOuting({...deps,venues:[venue(9,'Chavasse Park','park'),venue(10,'Sefton Park','park',53.4,-2.99)],intent:cleanIntent({roles:['walk'],longWalk:true,minutes:180})});assert.equal(p.stops[0].id,10);assert.equal(p.stops[0].durationMinutes,80)
+})
