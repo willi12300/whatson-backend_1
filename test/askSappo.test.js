@@ -24,3 +24,16 @@ test('no imaginary sunsets or weather: unavailable/stale forecast and short outi
 test('long walks favour substantial parks or waterfronts, rather than small city gardens',async()=>{
  const p=await buildOuting({...deps,venues:[venue(9,'Chavasse Park','park'),venue(10,'Sefton Park','park',53.4,-2.99)],intent:cleanIntent({roles:['walk'],longWalk:true,minutes:180})});assert.equal(p.stops[0].id,10);assert.equal(p.stops[0].durationMinutes,80)
 })
+test('respin exclusions swap one park, preserve locked venues and recalculate onward routes',async()=>{
+ const alternate=venue(8,'Princes Park','park',53.406,-2.9895)
+ const p=await buildOuting({...deps,venues:[...venues,alternate],intent:cleanIntent({roles:['coffee','walk','sunset'],minutes:300}),lockedIds:{coffee:1,sunset:3},excludedIds:[2],replacementCategory:'park'})
+ assert.deepEqual(p.stops.map(s=>s.id),[1,8,3]);assert.equal(p.stops[1].category_slug,'park');assert(p.stops[2].directionsUrl.includes('origin=53.406,-2.9895'));assert.equal(p.stops[2].sunsetAt,new Date(sunset).toISOString())
+})
+test('locked future stops are reserved; missing alternatives do not silently replace the rest',async()=>{
+ const p=await buildOuting({...deps,venues,intent:cleanIntent({roles:['coffee','walk','sunset'],minutes:300}),lockedIds:{coffee:1,sunset:3},excludedIds:[2,5],replacementCategory:'park'})
+ assert.equal(p.stops.some(s=>s.role==='walk'),false);assert.deepEqual(p.stops.map(s=>s.id),[1,3]);assert(p.missing.length>0)
+})
+test('a pub respin keeps the pub type, rather than substituting a bar',async()=>{
+ const p=await buildOuting({...deps,venues:[venue(11,'Original pub','pub'),venue(12,'A bar','bar'),venue(13,'Another pub','pub')],intent:cleanIntent({roles:['drink'],minutes:180}),excludedIds:[11],replacementCategory:'pub'})
+ assert.equal(p.stops[0].id,13)
+})

@@ -25,14 +25,18 @@ function weatherFor(w,at){
   if(!h)return null
   return {time:h.time,temp:h.temp,condition:h.condition,rainChance:h.rainChance,windSpeed:h.windSpeed,source:'Open-Meteo',fetchedAt:w.fetched_at}
 }
-async function buildOuting({venues,intent,startAt,origin,weather,weatherAt,walkingRoute}) {
+async function buildOuting({venues,intent,startAt,origin,weather,weatherAt,walkingRoute,lockedIds={},excludedIds=[],replacementCategory=null}) {
   const stops=[],missing=[],used=new Set(),start=new Date(startAt),end=start.getTime()+intent.minutes*60000
+  const excluded=new Set(excludedIds.map(String)),reserved=new Set(Object.values(lockedIds).map(String))
   let cursor=start.getTime(),previous=origin
   const sunset=usableWeather(weather)?(weather.sunsets||[]).map(x=>new Date(x)).find(x=>x>start&&x.getTime()<start.getTime()+24*3600000):null
   for(const role of intent.roles){
+    const lockedId=lockedIds[role]
     if(role==='sunset'&&(!sunset||sunset.getTime()>end)){missing.push('Sunset falls outside this outing, or its forecast time isn’t available. Try a later start or more time.');continue}
     const duration=role==='walk'?(intent.longWalk?80:45):role==='coffee'?35:role==='sunset'?30:60
     const candidates=venues.filter(v=>!used.has(String(v.id))&&v.lat!=null&&v.lng!=null&&matches(v,role)&&!['CLOSED_PERMANENTLY','CLOSED_TEMPORARILY'].includes(v.business_status))
+      .filter(v=>lockedId?String(v.id)===String(lockedId):!excluded.has(String(v.id))&&!reserved.has(String(v.id)))
+      .filter(v=>lockedId||!replacementCategory||v.category_slug===replacementCategory)
       .filter(v=>role!=='walk'||!intent.longWalk||/sefton park|princes park|otterspool promenade|waterfront.*promenade|liverpool waterfront|everton park|festival gardens|crosby beach|newsham park|calderstones park/i.test(v.name))
       .map(v=>({v,d:distanceMeters(previous.lat,previous.lng,Number(v.lat),Number(v.lng))}))
       .filter(x=>x.d<=(intent.lessWalking?1600:5000))
