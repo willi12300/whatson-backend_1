@@ -43,7 +43,14 @@ const WMO = {
   96: { label: 'Thunderstorm', icon: '⛈️', indoor: true },
   99: { label: 'Thunderstorm', icon: '⛈️', indoor: true },
 }
-const code = c => WMO[c] || { label: 'Unknown', icon: '🌡️', indoor: false }
+const code = (c,isDay) => {
+  const result=WMO[c] || { label: 'Unknown', icon: '🌡️', indoor: false }
+  if(isDay===0||isDay===false){
+    const icon=[0,1,2].includes(Number(c))?'🌙':[51,53,61,80].includes(Number(c))?'🌧️':result.icon
+    return {...result,icon}
+  }
+  return result
+}
 
 function weatherKey(lat, lng) {
   // Round to ~1km-ish. Prevents one moving phone from creating endless cache keys.
@@ -145,9 +152,9 @@ async function fetchWeatherLive(lat, lng) {
   const res = await axios.get(url, {
     params: {
       latitude: lat, longitude: lng,
-      current: 'temperature_2m,weather_code,wind_speed_10m,precipitation',
-      hourly: 'temperature_2m,weather_code,precipitation_probability,wind_speed_10m,precipitation',
-      daily: 'sunset',
+      current: 'temperature_2m,weather_code,wind_speed_10m,precipitation,is_day',
+      hourly: 'temperature_2m,weather_code,precipitation_probability,wind_speed_10m,precipitation,is_day',
+      daily: 'sunrise,sunset',
       timeformat: 'unixtime',
       forecast_days: 7, timezone: 'auto',
     },
@@ -157,17 +164,17 @@ async function fetchWeatherLive(lat, lng) {
 }
 
 function normaliseForecast(d) {
-  const cur=d.current,curCode=code(cur.weather_code),timeZone=d.timezone||'Europe/London'
+  const cur=d.current,curCode=code(cur.weather_code,cur.is_day),timeZone=d.timezone||'Europe/London'
   const times=d.hourly.time
   const timestamp=value=>typeof value==='number'?new Date(value*1000).toISOString():value
   const currentAt=typeof cur.time==='number'?cur.time:Date.parse(cur.time)/1000
   const hourly=[]
   for(let i=0;i<times.length;i++){
     if(typeof times[i]==='number'&&times[i]<currentAt-3600)continue
-    const wc=code(d.hourly.weather_code[i]),time=timestamp(times[i])
-    hourly.push({time,hour:Number(new Intl.DateTimeFormat('en-GB',{timeZone,hour:'2-digit',hourCycle:'h23'}).format(new Date(time))),temp:Math.round(d.hourly.temperature_2m[i]),condition:wc.label,icon:wc.icon,indoor:wc.indoor,rainChance:d.hourly.precipitation_probability?.[i]??null,windSpeed:d.hourly.wind_speed_10m?.[i]??null,precipitation:d.hourly.precipitation?.[i]??null})
+    const wc=code(d.hourly.weather_code[i],d.hourly.is_day?.[i]),time=timestamp(times[i])
+    hourly.push({time,isDay:d.hourly.is_day?.[i]===0?false:d.hourly.is_day?.[i]===1?true:null,hour:Number(new Intl.DateTimeFormat('en-GB',{timeZone,hour:'2-digit',hourCycle:'h23'}).format(new Date(time))),temp:Math.round(d.hourly.temperature_2m[i]),condition:wc.label,icon:wc.icon,indoor:wc.indoor,rainChance:d.hourly.precipitation_probability?.[i]??null,windSpeed:d.hourly.wind_speed_10m?.[i]??null,precipitation:d.hourly.precipitation?.[i]??null})
   }
-  return {timezone:timeZone,fetched_at:new Date().toISOString(),current:{time:timestamp(cur.time),temp:Math.round(cur.temperature_2m),condition:curCode.label,icon:curCode.icon,windSpeed:Math.round(cur.wind_speed_10m),precipitation:cur.precipitation},hourly,sunsets:(d.daily?.sunset||[]).map(timestamp),insight:buildInsight(cur,curCode,hourly.slice(0,12)),planningHint:buildPlanningHint(cur,curCode,hourly.slice(0,12))}
+  return {timezone:timeZone,fetched_at:new Date().toISOString(),current:{time:timestamp(cur.time),isDay:cur.is_day===0?false:cur.is_day===1?true:null,temp:Math.round(cur.temperature_2m),condition:curCode.label,icon:curCode.icon,windSpeed:Math.round(cur.wind_speed_10m),precipitation:cur.precipitation},hourly,sunrises:(d.daily?.sunrise||[]).map(timestamp),sunsets:(d.daily?.sunset||[]).map(timestamp),insight:buildInsight(cur,curCode,hourly.slice(0,12)),planningHint:buildPlanningHint(cur,curCode,hourly.slice(0,12))}
 }
 
 function firstRainHour(hourly) {
