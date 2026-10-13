@@ -9,7 +9,8 @@ const {interpret,status,availableModels}=require('../services/askInterpreter')
 // Reading diagnostics does not call Gemini or disclose credentials/prompts.
 router.get('/status',(req,res)=>res.json({provider:'Gemini',...status()}))
 router.get('/models',async(req,res)=>{try{res.json({models:await availableModels()})}catch{res.status(503).json({error:'Model catalogue is unavailable.'})}})
-router.use(rateLimit({windowMs:60*1000,max:8,standardHeaders:true,legacyHeaders:false,message:{error:'Give SAPPO a moment, then try again.'},validate:{trustProxy:false}}))
+// Venue swaps do not call Gemini. Keep their allowance separate from AI chat.
+router.use('/respin',rateLimit({windowMs:60*1000,max:60,standardHeaders:true,legacyHeaders:false,message:{error:'You’re swapping stops very quickly. Please wait a moment; your plan is still here.'},validate:{trustProxy:false}}))
 router.post('/respin',async(req,res,next)=>{
  try{
   const b=req.body||{},p=b.plan||{},stops=p.stops,start=new Date(p.startAt),now=Date.now()
@@ -36,6 +37,7 @@ router.post('/respin',async(req,res,next)=>{
   return res.status(409).json({error:'I couldn’t find another suitable place that fits this outing. Your original plan is still here—try more time or less walking.'})
  }catch(e){next(e)}
 })
+router.use(rateLimit({windowMs:60*1000,max:8,standardHeaders:true,legacyHeaders:false,message:{error:'Give SAPPO a moment, then try again.'},validate:{trustProxy:false}}))
 router.post('/',async(req,res,next)=>{
  try{
   const b=req.body||{},message=typeof b.message==='string'?b.message.trim():''
