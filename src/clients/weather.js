@@ -146,48 +146,28 @@ async function fetchWeatherLive(lat, lng) {
     params: {
       latitude: lat, longitude: lng,
       current: 'temperature_2m,weather_code,wind_speed_10m,precipitation',
-      hourly: 'temperature_2m,weather_code,precipitation_probability',
-      forecast_days: 1, timezone: 'auto',
+      hourly: 'temperature_2m,weather_code,precipitation_probability,wind_speed_10m,precipitation',
+      daily: 'sunset',
+      timeformat: 'unixtime',
+      forecast_days: 7, timezone: 'auto',
     },
     timeout: 8000,
   })
-  const d = res.data
-  const cur = d.current
-  const curCode = code(cur.weather_code)
+  return normaliseForecast(res.data)
+}
 
-  const times = d.hourly.time
-  const nowIso = cur.time
-  let startIdx = times.findIndex(t => t >= nowIso)
-  if (startIdx < 0) startIdx = 0
-  const hourly = []
-  for (let i = startIdx; i < Math.min(startIdx + 12, times.length); i++) {
-    const wc = code(d.hourly.weather_code[i])
-    hourly.push({
-      time: times[i],
-      hour: new Date(times[i]).getHours(),
-      temp: Math.round(d.hourly.temperature_2m[i]),
-      condition: wc.label,
-      icon: wc.icon,
-      indoor: wc.indoor,
-      rainChance: d.hourly.precipitation_probability?.[i] ?? null,
-    })
+function normaliseForecast(d) {
+  const cur=d.current,curCode=code(cur.weather_code),timeZone=d.timezone||'Europe/London'
+  const times=d.hourly.time
+  const timestamp=value=>typeof value==='number'?new Date(value*1000).toISOString():value
+  const currentAt=typeof cur.time==='number'?cur.time:Date.parse(cur.time)/1000
+  const hourly=[]
+  for(let i=0;i<times.length;i++){
+    if(typeof times[i]==='number'&&times[i]<currentAt-3600)continue
+    const wc=code(d.hourly.weather_code[i]),time=timestamp(times[i])
+    hourly.push({time,hour:Number(new Intl.DateTimeFormat('en-GB',{timeZone,hour:'2-digit',hourCycle:'h23'}).format(new Date(time))),temp:Math.round(d.hourly.temperature_2m[i]),condition:wc.label,icon:wc.icon,indoor:wc.indoor,rainChance:d.hourly.precipitation_probability?.[i]??null,windSpeed:d.hourly.wind_speed_10m?.[i]??null,precipitation:d.hourly.precipitation?.[i]??null})
   }
-
-  const insight = buildInsight(cur, curCode, hourly)
-  const planningHint = buildPlanningHint(cur, curCode, hourly)
-
-  return {
-    current: {
-      temp: Math.round(cur.temperature_2m),
-      condition: curCode.label,
-      icon: curCode.icon,
-      windSpeed: Math.round(cur.wind_speed_10m),
-      precipitation: cur.precipitation,
-    },
-    hourly,
-    insight,
-    planningHint,
-  }
+  return {timezone:timeZone,fetched_at:new Date().toISOString(),current:{time:timestamp(cur.time),temp:Math.round(cur.temperature_2m),condition:curCode.label,icon:curCode.icon,windSpeed:Math.round(cur.wind_speed_10m),precipitation:cur.precipitation},hourly,sunsets:(d.daily?.sunset||[]).map(timestamp),insight:buildInsight(cur,curCode,hourly.slice(0,12)),planningHint:buildPlanningHint(cur,curCode,hourly.slice(0,12))}
 }
 
 function firstRainHour(hourly) {
@@ -232,4 +212,4 @@ function buildPlanningHint(cur, curCode, hourly) {
   return { mode, note, temp: Math.round(cur.temperature_2m), condition: curCode.label }
 }
 
-module.exports = { getWeather }
+module.exports = { getWeather, normaliseForecast }

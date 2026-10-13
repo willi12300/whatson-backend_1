@@ -47,15 +47,36 @@ function extractVenueDescription(html,name,about=false) {
   return [...new Set(candidates)].filter(value=>value.length>=80&&!/cookie policy|accept cookies|access denied|captcha|just a moment|enable javascript/i.test(value)).sort((a,b)=>b.length-a.length).slice(0,1)
 }
 
+function recordedDescription(venue,rows,now=Date.now()) {
+  const normal=s=>text(s).toLowerCase().replace(/[^a-z0-9]/g,'')
+  for(const row of rows){
+    if(!['google','osm','openstreetmap'].includes(row.provider))continue
+    const raw=row.raw||{},name=raw.displayName?.text||raw.tags?.name||raw.name
+    const matchingId=venue.google_place_id&&row.provider==='google'&&row.provider_id===venue.google_place_id
+    if(!matchingId&&normal(name)!==normal(venue.name))continue
+    const checked=Date.parse(row.created_at),age=now-checked
+    if(!Number.isFinite(age)||age<0||age>30*86400000)continue
+    const description=excerpt(raw.editorialSummary?.text||raw.editorial_summary?.overview||raw.tags?.description)
+    if(description.length<80)continue
+    const source=row.provider==='google'?raw.googleMapsUri||`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([venue.name,venue.address].filter(Boolean).join(' '))}`:'https://www.openstreetmap.org/'
+    return {status:'ready',paragraphs:[description],source_url:source,source_label:row.provider==='google'?'Google Maps published summary':'OpenStreetMap description',checked_at:row.created_at}
+  }
+  return null
+}
+async function alternativeDescription(venue){
+  const {rows}=await query('SELECT provider,provider_id,raw,created_at FROM venue_sources WHERE venue_id=$1',[venue.id])
+  return recordedDescription(venue,rows)||{status:'unavailable',paragraphs:[]}
+}
+
 async function venueDescription(id) {
-  const {rows}=await query('SELECT id,name,website,address FROM venues WHERE id=$1',[id])
+  const {rows}=await query('SELECT id,name,website,address,google_place_id FROM venues WHERE id=$1',[id])
   const venue=rows[0];if(!venue)return null
   const published=sourceFor(venue,snapshots)
   if(published)return published
   const key=identity(venue),url=publicVenueUrl(venue.website)
-  if(!url)return {status:'unavailable',paragraphs:[]}
+  if(!url)return alternativeDescription(venue)
   const cache=await query('SELECT source_url,paragraphs,checked_at FROM venue_description_sources WHERE venue_id=$1 AND identity_key=$2 AND expires_at>now()',[venue.id,key])
-  if(cache.rows.length)return {status:cache.rows[0].paragraphs.length?'ready':'unavailable',...cache.rows[0]}
+  if(cache.rows.length){if(cache.rows[0].paragraphs.length)return {status:'ready',...cache.rows[0]};return alternativeDescription(venue)}
   if(inFlight.has(key))return inFlight.get(key)
   const work=(async()=>{
     let paragraphs=[],source=url
@@ -84,7 +105,8 @@ async function venueDescription(id) {
     const checked=new Date().toISOString(),hash=crypto.createHash('sha256').update(paragraphs.join('\n')).digest('hex')
     // One row per venue: a changed identity replaces the old excerpt, not its profile.
     await query(`INSERT INTO venue_description_sources(venue_id,identity_key,source_url,paragraphs,content_hash,checked_at,expires_at) VALUES($1,$2,$3,$4,$5,now(),now()+interval '24 hours') ON CONFLICT(venue_id) DO UPDATE SET identity_key=EXCLUDED.identity_key,source_url=EXCLUDED.source_url,paragraphs=EXCLUDED.paragraphs,content_hash=EXCLUDED.content_hash,checked_at=EXCLUDED.checked_at,expires_at=EXCLUDED.expires_at`,[venue.id,key,source,JSON.stringify(paragraphs),hash])
-    return {status:paragraphs.length?'ready':'unavailable',paragraphs,source_url:source,checked_at:checked}
+    if(!paragraphs.length)return alternativeDescription(venue)
+    return {status:'ready',paragraphs,source_url:source,checked_at:checked}
   })().finally(()=>inFlight.delete(key))
   inFlight.set(key,work);return work
 }
@@ -97,4 +119,4 @@ async function eventDescription(id) {
   const lineup=(raw.artists||raw._embedded?.attractions||[]).map(artist=>text(artist.name||artist.artistname)).filter(Boolean)
   return {status:'ready',paragraphs:paragraphs.slice(0,2),notes:excerpt(raw.pleaseNote)||null,lineup:[...new Set(lineup)].slice(0,20),source_url:row.ticket_url,checked_at:row.updated_at,provider:row.provider}
 }
-module.exports={venueDescription,eventDescription,extractVenueDescription,identity,excerpt,text}
+module.exports={venueDescription,eventDescription,extractVenueDescription,identity,excerpt,text,recordedDescription}

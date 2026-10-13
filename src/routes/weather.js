@@ -7,7 +7,7 @@ const router = express.Router()
 router.get('/', async (req, res) => {
   const lat = parseFloat(req.query.lat)
   const lng = parseFloat(req.query.lng)
-  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat)>90 || Math.abs(lng)>180) {
     return res.status(400).json({ error: 'lat and lng required' })
   }
 

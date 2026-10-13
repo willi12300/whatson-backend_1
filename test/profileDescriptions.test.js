@@ -69,3 +69,13 @@ test('indexed landmarks describe the place rather than repeating a broad categor
  assert.match(promenade.paragraphs.join(' '),/Wirral/)
  assert.equal(require('../src/services/profileDescriptions').text('John&#039;s and Liverpool&#x27;s'),'John\'s and Liverpool\'s')
 })
+
+test('missing website descriptions can use published source summaries without inventing review-based copy',()=>{
+ const {recordedDescription}=require('../src/services/profileDescriptions'),now=Date.parse('2026-10-13T12:00:00Z')
+ const venue={id:1,name:'Example Cafe',address:'Liverpool',google_place_id:'real-place'}
+ const row={provider:'google',provider_id:'real-place',created_at:'2026-10-12T12:00:00Z',raw:{displayName:{text:'Example Cafe'},editorialSummary:{text:'A cafe serving seasonal dishes and freshly baked pastries in a restored building in the centre of Liverpool.'}}}
+ assert.equal(recordedDescription(venue,[row],now).source_label,'Google Maps published summary')
+ assert.equal(recordedDescription({...venue,name:'Different',google_place_id:'other'},[row],now),null)
+ assert.equal(recordedDescription(venue,[{...row,created_at:'2020-01-01'}],now),null)
+ assert.equal(recordedDescription(venue,[{...row,raw:{reviews:[{text:'Best cafe in the world'}]}}],now),null)
+})
