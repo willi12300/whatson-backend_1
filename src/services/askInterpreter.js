@@ -69,4 +69,11 @@ function createInterpreter({post=axios.post,key=()=>process.env.GEMINI_API_KEY,n
  return {interpret:run,status}
 }
 const interpreter=createInterpreter()
-module.exports={classifyFailure,basicIntent,createInterpreter,...interpreter}
+let modelList=null,modelListAt=0
+async function availableModels(){
+ if(modelList&&Date.now()-modelListAt<3600000)return modelList
+ if(!process.env.GEMINI_API_KEY)return []
+ const response=await axios.get('https://generativelanguage.googleapis.com/v1beta/models',{headers:{'x-goog-api-key':process.env.GEMINI_API_KEY},params:{pageSize:1000},timeout:10000})
+ modelList=(response.data?.models||[]).filter(m=>m.supportedGenerationMethods?.includes('generateContent')).map(m=>({name:m.name}));modelListAt=Date.now();return modelList
+}
+module.exports={classifyFailure,basicIntent,createInterpreter,availableModels,...interpreter}

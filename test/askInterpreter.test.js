@@ -31,3 +31,7 @@ test('a quota-exhausted model switches to the compatible backup, and stays off t
  const first=await i.interpret(request);assert.equal(first.mode,'ai');assert.equal(first.model,'gemini-2.5-flash-lite');assert.equal(called.length,2)
  const second=await i.interpret({...request,message:'Coffee then a walk'});assert.equal(second.mode,'ai');assert.equal(called.length,3);assert(called[2].includes('flash-lite'));assert.equal(i.status().state,'ready');assert.equal(i.status().modelsInCooldown[0].kind,'quota_exceeded')
 })
+test('failover does not exceed the shared daily attempt budget',async()=>{
+ const original=process.env.ASK_SAPPO_DAILY_LIMIT;process.env.ASK_SAPPO_DAILY_LIMIT='1'
+ try{let calls=0;const i=createInterpreter({key:()=> 'test-key',log:()=>{},post:async()=>{calls++;throw quotaError()}});assert.equal((await i.interpret(request)).mode,'basic');assert.equal(calls,1);await i.interpret({...request,message:'Coffee'});assert.equal(calls,1)}finally{if(original===undefined)delete process.env.ASK_SAPPO_DAILY_LIMIT;else process.env.ASK_SAPPO_DAILY_LIMIT=original}
+})

@@ -5,9 +5,10 @@ const {getWeather}=require('../clients/weather')
 const {routeFor}=require('../clients/routes')
 const {config}=require('../config')
 const {buildOuting}=require('../services/askSappo')
-const {interpret,status}=require('../services/askInterpreter')
+const {interpret,status,availableModels}=require('../services/askInterpreter')
 // Reading diagnostics does not call Gemini or disclose credentials/prompts.
 router.get('/status',(req,res)=>res.json({provider:'Gemini',...status()}))
+router.get('/models',async(req,res)=>{try{res.json({models:await availableModels()})}catch{res.status(503).json({error:'Model catalogue is unavailable.'})}})
 router.use(rateLimit({windowMs:60*1000,max:8,standardHeaders:true,legacyHeaders:false,message:{error:'Give SAPPO a moment, then try again.'},validate:{trustProxy:false}}))
 router.post('/',async(req,res,next)=>{
  try{
