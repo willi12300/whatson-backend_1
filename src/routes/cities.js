@@ -1,6 +1,7 @@
 const express = require('express')
 const { query } = require('../db/pool')
 const router = express.Router()
+const {DESTINATIONS}=require('../services/destinations')
 
 // GET /cities  — distinct cities that actually have data, with counts
 router.get('/', async (req, res, next) => {
@@ -16,14 +17,7 @@ router.get('/', async (req, res, next) => {
       HAVING COUNT(DISTINCT v.id) > 0
       ORDER BY venue_count DESC
     `)
-    const cities = rows.map(r => ({
-      id: r.name.toLowerCase().replace(/\s+/g, '-'),
-      name: r.name,
-      venueCount: parseInt(r.venue_count),
-      eventCount: parseInt(r.event_count),
-      lat: parseFloat(r.lat),
-      lng: parseFloat(r.lng),
-    }))
+    const cities=DESTINATIONS.map(destination=>{const r=rows.find(x=>x.name===destination.name);return {...destination,venueCount:Number(r?.venue_count)||0,eventCount:Number(r?.event_count)||0}})
     res.json({ cities })
   } catch (err) { next(err) }
 })

@@ -10,6 +10,7 @@ const { deduplicate, mergeCluster } = require('./dedup')
 const { matchEventToVenue } = require('./matchEvents')
 const logger = require('../utils/logger')
 const { hasUsablePhotos } = require('./photoData')
+const { destinationName } = require('./destinations')
 
 function queueEnrichment(venueId, reason) {
   try {
@@ -31,6 +32,8 @@ async function upsertVenue(v, city) {
 }
 
 async function upsertVenueRecord(v,city,query) {
+  const locality=city
+  city=destinationName(city,v)
   const sources = Array.isArray(v.sources) ? v.sources.filter(Boolean) : []
   const googleSource = sources.find(s => s.provider === 'google') || null
   const googlePlaceId = googleSource?.providerId || v.googlePlaceId || null
@@ -50,12 +53,12 @@ async function upsertVenueRecord(v,city,query) {
     if(identityMatch){
       await query(`UPDATE venues SET address=COALESCE(address,$1),phone=COALESCE(phone,$2),website=COALESCE(website,$3),rating=COALESCE(rating,$4),rating_count=COALESCE(rating_count,$5),google_place_id=COALESCE(google_place_id,$6),google_maps_url=COALESCE(google_maps_url,$7),photos=CASE WHEN jsonb_array_length(COALESCE(photos,'[]'::jsonb))=0 THEN COALESCE($8::jsonb,photos) ELSE photos END,cover_photo=COALESCE(cover_photo,$9),last_seen_at=now() WHERE id=$10`,[v.address,v.phone,v.website,v.rating,v.ratingCount,googlePlaceId,googleMapsUrl,incomingPhotos,incomingCover,venueId])
     }else {
-    await query(`UPDATE venues SET name=$1,normalised_name=$2,category_slug=$3,lat=$4,lng=$5,address=$6,postcode=$7,phone=$8,website=$9,rating=$10,rating_count=$11,price_level=$12,opening_hours=$13,business_status=$14,photos=COALESCE($15::jsonb, photos),cover_photo=COALESCE($16, cover_photo),city=$17,google_place_id=COALESCE($18, google_place_id),google_maps_url=COALESCE(google_maps_url,$19),updated_at=now(),last_seen_at=now() WHERE id=$20`,
-      [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,incomingPhotos,incomingCover,city,googlePlaceId,googleMapsUrl,venueId])
+    await query(`UPDATE venues SET name=$1,normalised_name=$2,category_slug=$3,lat=$4,lng=$5,address=$6,postcode=$7,phone=$8,website=$9,rating=$10,rating_count=$11,price_level=$12,opening_hours=$13,business_status=$14,photos=COALESCE($15::jsonb, photos),cover_photo=COALESCE($16, cover_photo),city=$17,google_place_id=COALESCE($18, google_place_id),google_maps_url=COALESCE(google_maps_url,$19),source_locality=COALESCE(source_locality,$21),updated_at=now(),last_seen_at=now() WHERE id=$20`,
+      [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,incomingPhotos,incomingCover,city,googlePlaceId,googleMapsUrl,venueId,locality])
     }
   } else {
-    const { rows } = await query(`INSERT INTO venues (name,normalised_name,category_slug,lat,lng,address,postcode,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,city,google_place_id,google_maps_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
-      [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,JSON.stringify(v.photos||[]),v.coverPhoto,city,googlePlaceId,googleMapsUrl])
+    const { rows } = await query(`INSERT INTO venues (name,normalised_name,category_slug,lat,lng,address,postcode,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,city,google_place_id,google_maps_url,source_locality) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+      [v.name,v.normalisedName,v.category,v.lat,v.lng,v.address,v.postcode,v.phone,v.website,v.rating,v.ratingCount,v.priceLevel,v.openingHours?JSON.stringify(v.openingHours):null,v.businessStatus,JSON.stringify(v.photos||[]),v.coverPhoto,city,googlePlaceId,googleMapsUrl,locality])
     venueId = rows[0].id
   }
   for (const s of sources) {

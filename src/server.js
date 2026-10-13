@@ -23,6 +23,7 @@ app.use(helmet({
 }))
 app.use(cors())
 app.use(express.json())
+app.use((req,res,next)=>{const {destinationName}=require('./services/destinations');if(req.query.city)req.query.city=destinationName(req.query.city);if(typeof req.body?.city==='string')req.body.city=destinationName(req.body.city);if(typeof req.body?.selectedCity==='string')req.body.selectedCity=destinationName(req.body.selectedCity);next()})
 app.use(rateLimit({ windowMs: 60 * 1000, max: 300, validate: { trustProxy: false } }))
 
 // Google Places photo URLs are short-lived and a browser must never use the

@@ -277,8 +277,12 @@ router.get('/', async (req, res, next) => {
       params.push(String(search).toLowerCase());const nameIndex=params.length
       order=`ORDER BY (LOWER(name)=$${nameIndex}) DESC, (LOWER(name) LIKE $${nameIndex} || '%') DESC, ((COALESCE(rating,4)*COALESCE(rating_count,0)+80)/(COALESCE(rating_count,0)+20)) DESC, id ASC`
     }
-    params.push(Math.max(1,Math.min(parseInt(limit)||100,2000)))
-    const { rows } = await query(`SELECT id,name,category_slug,lat,lng,address,city,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,claimed,tripadvisor_rating,tripadvisor_review_count,cuisine_type,menu_summary,menu_url,dietary_options FROM venues WHERE ${where.join(' AND ')} ${order} LIMIT $${params.length}`, params)
+    const pageSize=Math.max(1,Math.min(parseInt(limit)||100,2000)),offset=Math.max(0,Math.min(Number.parseInt(req.query.offset)||0,100000))
+    const paginated=!lat&&!lng
+    params.push(pageSize+(paginated?1:0));const limitIndex=params.length
+    params.push(offset)
+    const { rows } = await query(`SELECT id,name,category_slug,lat,lng,address,city,phone,website,rating,rating_count,price_level,opening_hours,business_status,photos,cover_photo,claimed,tripadvisor_rating,tripadvisor_review_count,cuisine_type,menu_summary,menu_url,dietary_options FROM venues WHERE ${where.join(' AND ')} ${order||'ORDER BY id ASC'} LIMIT $${limitIndex} OFFSET $${params.length}`, params)
+    const hasMore=paginated&&rows.length>pageSize
     let result = rows
     if (lat && lng) {
       result = rows.map(v => ({ ...v, distance_m: Math.round(distanceMeters(parseFloat(lat), parseFloat(lng), v.lat, v.lng)) }))
@@ -346,7 +350,8 @@ router.get('/', async (req, res, next) => {
       }
     }
 
-    res.json({ count: result.length, venues: result.map(v => withFoodEvidence(repairVenuePhotos(v),search)) })
+    if(paginated)result=result.slice(0,pageSize)
+    res.json({ count: result.length, has_more:hasMore,next_offset:hasMore?offset+pageSize:null,venues: result.map(v => withFoodEvidence(repairVenuePhotos(v),search)) })
   } catch (err) { next(err) }
 })
 
