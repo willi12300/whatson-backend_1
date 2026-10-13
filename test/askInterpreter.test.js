@@ -12,9 +12,9 @@ test('supported outings and simple refinements work without AI; unsupported cons
 })
 test('429 produces a labelled basic plan intent and suppresses calls until retry time',async()=>{
  let calls=0,clock=Date.parse('2026-10-13T12:00:00Z');const i=createInterpreter({key:()=> 'private-key',now:()=>clock,log:()=>{},post:async()=>{calls++;throw quotaError()}})
- const first=await i.interpret(request);assert.equal(first.mode,'basic');assert.equal(first.issue,'quota_exceeded');assert.equal(calls,1)
- await i.interpret({...request,message:'Coffee and a walk'});assert.equal(calls,1);assert.equal(i.status().kind,'quota_exceeded');assert(!JSON.stringify(i.status()).includes('private-key'))
- clock+=61000;await i.interpret(request);assert.equal(calls,2)
+ const first=await i.interpret(request);assert.equal(first.mode,'basic');assert.equal(first.issue,'quota_exceeded');assert.equal(calls,2)
+ await i.interpret({...request,message:'Coffee and a walk'});assert.equal(calls,2);assert.equal(i.status().kind,'quota_exceeded');assert(!JSON.stringify(i.status()).includes('private-key'))
+ clock+=61000;await i.interpret(request);assert.equal(calls,4)
 })
 test('duplicate requests share one Gemini call and successful intents are cached',async()=>{
  let calls=0,release;const wait=new Promise(r=>release=r),i=createInterpreter({key:()=> 'test-key',log:()=>{},post:async()=>{calls++;await wait;return {data:{candidates:[{content:{parts:[{text:JSON.stringify({roles:['coffee','walk'],minutes:180})}]}}]}}}})
@@ -24,4 +24,10 @@ test('duplicate requests share one Gemini call and successful intents are cached
 test('missing keys and malformed model replies still support basic requests honestly',async()=>{
  const noKey=createInterpreter({key:()=>null,post:()=>{throw Error('must not call')}});assert.equal((await noKey.interpret(request)).mode,'basic')
  const malformed=createInterpreter({key:()=> 'test-key',log:()=>{},post:async()=>({data:{candidates:[]}})});assert.equal((await malformed.interpret(request)).issue,'invalid_response');assert.equal(malformed.status().kind,'invalid_response')
+})
+
+test('a quota-exhausted model switches to the compatible backup, and stays off the exhausted model during cooldown',async()=>{
+ const called=[],i=createInterpreter({key:()=> 'test-key',log:()=>{},post:async(url)=>{called.push(url);if(url.includes('/gemini-2.5-flash:'))throw quotaError();return {data:{candidates:[{content:{parts:[{text:'{"roles":["coffee"],"minutes":180}'}]}}]}}}})
+ const first=await i.interpret(request);assert.equal(first.mode,'ai');assert.equal(first.model,'gemini-2.5-flash-lite');assert.equal(called.length,2)
+ const second=await i.interpret({...request,message:'Coffee then a walk'});assert.equal(second.mode,'ai');assert.equal(called.length,3);assert(called[2].includes('flash-lite'));assert.equal(i.status().state,'ready');assert.equal(i.status().modelsInCooldown[0].kind,'quota_exceeded')
 })

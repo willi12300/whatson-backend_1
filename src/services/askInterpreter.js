@@ -8,7 +8,7 @@ function classifyFailure(error){
  const reasons=details.map(x=>x.reason).filter(Boolean),violations=details.flatMap(x=>Array.isArray(x.violations)?x.violations:[])
  const metrics=[...new Set(violations.map(x=>x.quotaMetric).filter(x=>typeof x==='string'&&/^[a-zA-Z0-9_./-]{1,150}$/.test(x)))].slice(0,4)
  const invalid=reasons.some(x=>/API_KEY_INVALID|API_KEY_EXPIRED/.test(x))
- const kind=status===429?'quota_exceeded':invalid?'invalid_key':status===401||status===403?'access_denied':status===400?'invalid_request':error?.code==='ECONNABORTED'?'timeout':error?.code==='BAD_JSON'?'invalid_response':status>=500?'provider_unavailable':'connection_error'
+ const kind=status===429?'quota_exceeded':invalid?'invalid_key':status===401||status===403?'access_denied':status===404?'unsupported_model':status===400?'invalid_request':error?.code==='ECONNABORTED'?'timeout':error?.code==='BAD_JSON'?'invalid_response':status>=500?'provider_unavailable':'connection_error'
  const retryInfo=details.find(x=>String(x['@type']||'').endsWith('RetryInfo'))
  const seconds=Number.parseFloat(retryInfo?.retryDelay||error?.response?.headers?.['retry-after'])
  return {kind,httpStatus:status,quotaMetrics:metrics,retrySeconds:Number.isFinite(seconds)?Math.max(60,Math.min(3600,Math.ceil(seconds))):120}
@@ -29,31 +29,37 @@ function basicIntent(message,history=[]){
 }
 
 function createInterpreter({post=axios.post,key=()=>process.env.GEMINI_API_KEY,now=Date.now,log=logger.warn}={}){
- let last={state:'not_checked',observedAt:null},cooldownUntil=0,day='',attempts=0
+ const models=['gemini-2.5-flash','gemini-2.5-flash-lite'],failoverKinds=new Set(['quota_exceeded','provider_unavailable','timeout','connection_error','unsupported_model'])
+ let last={state:'not_checked',observedAt:null},day='',attempts=0
+ const failures=new Map(),cache=new Map(),inFlight=new Map()
  const dailyLimit=()=>Math.max(0,Math.min(500,Number(process.env.ASK_SAPPO_DAILY_LIMIT??100)||0))
- const cache=new Map(),inFlight=new Map()
- function status(){return {...last,retryAt:cooldownUntil>now()?new Date(cooldownUntil).toISOString():null}}
+ function status(){return {...last,modelsInCooldown:[...failures].filter(([,f])=>f.until>now()).map(([model,f])=>({model,...f.failure,retryAt:new Date(f.until).toISOString()}))}}
  async function run({message,history=[],minutes=180}){
   const today=new Date(now()).toISOString().slice(0,10);if(day!==today){day=today;attempts=0}
   const cacheKey=JSON.stringify({message,history,minutes}),saved=cache.get(cacheKey)
   if(saved&&now()-saved.at<10*60000)return {...saved.value,cached:true}
   if(inFlight.has(cacheKey))return inFlight.get(cacheKey)
   async function work(){
-   let failure=!key()?{kind:'missing_key'}:cooldownUntil>now()?last:attempts>=dailyLimit()?{kind:'trial_limit'}:null
+   let failure=!key()?{kind:'missing_key'}:attempts>=dailyLimit()?{kind:'trial_limit'}:null
    if(!failure){
-    attempts++
-    try{
-     const response=await post('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',{
-      systemInstruction:{parts:[{text:SYSTEM}]},contents:[{role:'user',parts:[{text:JSON.stringify({earlierRequests:history,request:message,availableMinutes:minutes})}]}],
-      generationConfig:{responseMimeType:'application/json',maxOutputTokens:400,temperature:0.1,thinkingConfig:{thinkingBudget:0}}
-     },{headers:{'x-goog-api-key':key()},timeout:20000})
-     let raw
-     try{raw=JSON.parse(response.data?.candidates?.[0]?.content?.parts?.filter(p=>!p.thought).map(p=>p.text||'').join('')||'');if(!raw||!Array.isArray(raw.roles))throw Error('invalid')}catch{throw Object.assign(new Error('Invalid model response'),{code:'BAD_JSON'})}
-     last={state:'ready',observedAt:new Date(now()).toISOString()};cooldownUntil=0
-     const value={intent:cleanIntent(raw),mode:'ai',provider:'Gemini'}
-     if(cache.size>=200)cache.delete(cache.keys().next().value)
-     cache.set(cacheKey,{at:now(),value});return value
-    }catch(error){failure=classifyFailure(error);last={state:'unavailable',...failure,observedAt:new Date(now()).toISOString()};cooldownUntil=now()+failure.retrySeconds*1000;log('[Ask SAPPO] Gemini unavailable',JSON.stringify(last))}
+    for(const model of models){
+     const cooling=failures.get(model)
+     if(cooling?.until>now()){failure=cooling.failure;if(!failoverKinds.has(failure.kind))break;continue}
+     if(attempts>=dailyLimit()){failure={kind:'trial_limit'};break}
+     attempts++
+     try{
+      const response=await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{
+       systemInstruction:{parts:[{text:SYSTEM}]},contents:[{role:'user',parts:[{text:JSON.stringify({earlierRequests:history,request:message,availableMinutes:minutes})}]}],
+       generationConfig:{responseMimeType:'application/json',maxOutputTokens:400,temperature:0.1,thinkingConfig:{thinkingBudget:0}}
+      },{headers:{'x-goog-api-key':key()},timeout:15000})
+      let raw
+      try{raw=JSON.parse(response.data?.candidates?.[0]?.content?.parts?.filter(p=>!p.thought).map(p=>p.text||'').join('')||'');if(!raw||!Array.isArray(raw.roles))throw Error('invalid')}catch{throw Object.assign(new Error('Invalid model response'),{code:'BAD_JSON'})}
+      last={state:'ready',model,observedAt:new Date(now()).toISOString()};failures.delete(model)
+      const value={intent:cleanIntent(raw),mode:'ai',provider:'Gemini',model}
+      if(cache.size>=200)cache.delete(cache.keys().next().value)
+      cache.set(cacheKey,{at:now(),value});return value
+     }catch(error){failure=classifyFailure(error);last={state:'unavailable',model,...failure,observedAt:new Date(now()).toISOString()};failures.set(model,{until:now()+failure.retrySeconds*1000,failure});log('[Ask SAPPO] Gemini unavailable',JSON.stringify(last));if(!failoverKinds.has(failure.kind))break}
+    }
    }
    return {intent:basicIntent(message,history),mode:'basic',provider:null,issue:failure.kind||last.kind}
   }
