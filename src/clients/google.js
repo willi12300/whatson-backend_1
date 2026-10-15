@@ -290,6 +290,7 @@ async function getPlaceDetails(placeId, timeoutMs = 8000) {
           'internationalPhoneNumber',
           'websiteUri',
           'businessStatus',
+          'allowsDogs',
           'googleMapsUri',
           'reviews'
         ].join(','),

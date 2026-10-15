@@ -1,3 +1,4 @@
+const { googleDogPolicy } = require('./dogPolicy')
 const { query } = require('../db/pool')
 const { canonicalVenueId } = require('./venueIdentity')
 const { distanceMeters, repairPhotoUrl } = require('../utils/helpers')
@@ -317,7 +318,7 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
         `INSERT INTO venue_sources (venue_id, provider, provider_id, raw)
          VALUES ($1, 'google', $2, $3)
          ON CONFLICT (provider, provider_id) DO UPDATE SET venue_id=EXCLUDED.venue_id, raw=EXCLUDED.raw`,
-        [venue.id, placeId, details.raw ? JSON.stringify(details.raw) : null]
+        [venue.id, placeId, details.raw ? JSON.stringify({...details.raw,_sappoDogCheckedAt:new Date().toISOString()}) : null]
       ).catch(() => {})
     }
 
@@ -447,7 +448,7 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
   // sequential round-trips (a chunk of the perceived "loading" on every open).
   const [eventsQ, sourcesQ, offersQ] = await Promise.all([
     query(`SELECT id,name,description,image_url,category,genre,starts_at,ends_at,is_free,min_price,ticket_url FROM events WHERE venue_id=$1 AND status='active' AND starts_at>=now() ORDER BY starts_at ASC LIMIT 20`, [id]),
-    query(`SELECT provider,provider_id FROM venue_sources WHERE venue_id=$1`, [id]),
+    query(`SELECT provider,provider_id,raw->'allowsDogs' AS allows_dogs,raw->>'_sappoDogCheckedAt' AS dog_checked_at FROM venue_sources WHERE venue_id=$1`, [id]),
     query(`SELECT id,title,description,discount_type,estimated_value,ends_at,redeem_url FROM offers WHERE venue_id=$1 AND active=TRUE AND (ends_at IS NULL OR ends_at>=now()) ORDER BY created_at DESC`, [id]),
   ])
 
@@ -508,7 +509,8 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     photos: repairedPhotos,
     heroImages: [cover, ...repairedPhotos.map(p => p.url || p).filter(Boolean)].filter(Boolean),
     events: eventsQ.rows,
-    sources: sourcesQ.rows,
+    sources: sourcesQ.rows.map(({provider,provider_id})=>({provider,provider_id})),
+    dog_access: googleDogPolicy(sourcesQ.rows,mapsUrl),
     offers: offersQ.rows,
 
     // UX fields consumed by the new VenueDetail screen.
