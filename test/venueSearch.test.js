@@ -31,3 +31,17 @@ test('the website/menu index supports arbitrary terms beyond the original burger
  const params=[];const sql=venueSearchClause('pizzas',params)
  assert(params[1].length>20);assert(sql.includes('unnest'))
 })
+
+
+test('directory nearby-pub lists never masquerade as a venue-name or menu match',()=>{
+ const {searchableWebsiteDocument}=require('../src/services/venueSearch')
+ assert.equal(searchableWebsiteDocument({url:'https://camra.org.uk/pubs/white-star-liverpool-165743'}),false)
+ assert.equal(searchableWebsiteDocument({url:'https://www.camra.org.uk/pubs/example'}),false)
+ assert.equal(searchableWebsiteDocument({url:'https://mccooleys.co.uk/concert-square/'}),true)
+ assert.equal(searchableWebsiteDocument({url:'https://mccooleys.co.uk/mathew-street/food/'}),true)
+ assert.equal(searchableWebsiteDocument({url:'not a URL'}),false)
+ const star=withFoodEvidence({id:7634,name:'White Star',category_slug:'pub'},'mccooleys')
+ assert.equal(star.search_evidence,undefined)
+ const params=[];venueSearchClause('mccooleys',params)
+ assert(!params.filter(Array.isArray).flat().includes(7634))
+})

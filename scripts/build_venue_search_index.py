@@ -8,7 +8,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-SKIP_HOSTS=('facebook.com','instagram.com','google.com','goo.gl','tripadvisor.com','tripadvisor.co.uk','linktr.ee','youtube.com','tiktok.com','x.com','twitter.com')
+SKIP_HOSTS=('camra.org.uk','facebook.com','instagram.com','google.com','goo.gl','tripadvisor.com','tripadvisor.co.uk','linktr.ee','youtube.com','tiktok.com','x.com','twitter.com')
 lock=threading.Lock(); cache={}; in_flight={}
 class Page(HTMLParser):
  def __init__(self):super().__init__();self.text=[];self.links=[];self.excluded=0;self.title='';self.in_title=False

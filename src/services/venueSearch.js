@@ -4,7 +4,12 @@ const FOOD_WORDS = new Set('burger pizza curry taco sandwich steak pasta noodle 
 const normalise = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()
 const aliases = { burgers:'burger', pizzas:'pizza', coffees:'coffee', cafes:'cafe', restaurants:'restaurant', pubs:'pub', bars:'bar',curries:'curry',sandwiches:'sandwich',pastries:'pastry',fish:'fish',chips:'chips',fries:'fries',tapas:'tapas',hummus:'hummus',bbq:'barbecue' }
 function canonicalWord(word) {return aliases[word]||((word.endsWith('s')&&!word.endsWith('ss')&&word.length>3)?word.slice(0,-1):word)}
-const indexedVenues = new Map(websiteIndex.venues.filter(venue=>venue.documents?.length).map(venue=>[String(venue.id),{...venue,documents:venue.documents.map(document=>{const words=new Set(document.terms.map(canonicalWord));return {...document,words,foodKeywords:[...words].filter(word=>FOOD_WORDS.has(word))}})}]))
+// Directory pages contain neighbouring venue lists: their page-wide words are
+// not evidence about this venue (e.g. CAMRA White Star mentions McCooley's).
+function searchableWebsiteDocument(document) {
+ try {const u=new URL(document.url);return ['http:','https:'].includes(u.protocol)&&!['camra.org.uk','tripadvisor.com','tripadvisor.co.uk','google.com'].some(host=>u.hostname===host||u.hostname.endsWith('.'+host))}catch{return false}
+}
+const indexedVenues = new Map(websiteIndex.venues.filter(venue=>venue.documents?.some(searchableWebsiteDocument)).map(venue=>[String(venue.id),{...venue,documents:venue.documents.filter(searchableWebsiteDocument).map(document=>{const words=new Set(document.terms.map(canonicalWord));return {...document,words,foodKeywords:[...words].filter(word=>FOOD_WORDS.has(word))}})}]))
 function searchWords(value) { return [...new Set(normalise(value).split(/\s+/).filter(Boolean).map(canonicalWord))].slice(0,12) }
 function matchingDocuments(venue,word) {
   const entry=indexedVenues.get(String(venue.id))
@@ -45,4 +50,4 @@ function venueSearchClause(value, params) {
     return `(CONCAT_WS(' ',name,address,category_slug,cuisine_type,menu_summary,dietary_options) ILIKE $${textIndex}${evidence})`
   }).join(' AND ')
 }
-module.exports={searchWords,withFoodEvidence,venueSearchClause,matchingDocuments}
+module.exports={searchableWebsiteDocument,searchWords,withFoodEvidence,venueSearchClause,matchingDocuments}
