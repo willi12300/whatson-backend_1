@@ -1,0 +1,65 @@
+name: Catalogue venue link audit
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/venue-link-audit.yml'
+      - 'scripts/audit-venue-links.js'
+permissions:
+  contents: write
+concurrency:
+  group: catalogue-link-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run regression tests
+        run: npm test
+      - name: Wait for deployed snapshot and verify quarantined profile
+        shell: bash
+        run: |
+          for attempt in $(seq 1 45); do
+            if curl -fsS --max-time 20 'https://whatson-backend1-production.up.railway.app/venue-link-audit/catalogue?limit=1' > /tmp/snapshot.json; then
+              break
+            fi
+            sleep 5
+          done
+          node -e "const d=JSON.parse(require('fs').readFileSync('/tmp/snapshot.json'));if(!Array.isArray(d.venues))process.exit(1)"
+          node - <<'NODE'
+          const base='https://whatson-backend1-production.up.railway.app'
+          ;(async()=>{const r=await fetch(base+'/venues/7253/profile?_audit='+Date.now());if(!r.ok)throw Error('Profile unavailable');const v=await r.json();for(const key of ['website','menu_url','cover_photo','google_place_id'])if(v[key])throw Error('Contaminated field still visible: '+key);console.log('LIVE QUARANTINE VERIFIED',v.id,v.name,v.link_identity_status)})().catch(e=>{console.error(e);process.exit(1)})
+          NODE
+      - name: Audit all venues and all website/menu/social/booking fields
+        run: node scripts/audit-venue-links.js
+      - name: Save full report as downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: venue-link-audit
+          path: |
+            audit-results/venue-link-audit.json
+            audit-results/report.csv
+            audit-results/report.json
+            audit-results/catalogue.json
+          retention-days: 30
+      - name: Publish review branch without changing production
+        env:
+          AUDIT_BRANCH: audit/venue-links-${{ github.run_id }}
+        run: |
+          git checkout -b "$AUDIT_BRANCH"
+          cp audit-results/venue-link-audit.json data/venue-link-audit.json
+          mkdir -p reports
+          cp audit-results/report.csv reports/venue-links.csv
+          node -e "require('fs').writeFileSync('reports/venue-links-summary.json',JSON.stringify(JSON.parse(require('fs').readFileSync('audit-results/venue-link-audit.json')).counts,null,2))"
+          git add data/venue-link-audit.json reports/venue-links.csv reports/venue-links-summary.json
+          git -c user.name='SAPPO link audit' -c user.email='sappo-audit@users.noreply.github.com' commit -m 'Record full catalogue link identity audit for review'
+          git push origin "$AUDIT_BRANCH"
+          echo "Review branch: $AUDIT_BRANCH" >> "$GITHUB_STEP_SUMMARY"
