@@ -31,7 +31,7 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 300, validate: { trustProxy: false
 // regardless of which API endpoint produced the venue/event/plan JSON.
 app.use((req, res, next) => {
   const sendJson = res.json.bind(res)
-  res.json = body => sendJson(repairGooglePhotoUrls(body, req))
+  res.json = body => sendJson(repairGooglePhotoUrls(req.originalUrl.split('?')[0].startsWith('/venue-link-audit/')?body:require('./services/venueLinkPolicy').sanitiseVenueLinks(body), req))
   next()
 })
 
@@ -48,6 +48,7 @@ app.get('/health', async (req, res) => {
 app.use(require('./services/auth').withAuth)
 
 app.use('/auth',   require('./routes/auth'))
+app.use('/venue-link-audit',require('./routes/venueLinkAudit'))
 app.use('/venues', require('./routes/venues'))
 app.use('/home', require('./routes/home'))
 app.use('/attractions', require('./routes/attractions'))

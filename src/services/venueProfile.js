@@ -1,3 +1,5 @@
+const { providerIdentity } = require('./providerIdentity')
+const { applyVenueLinkPolicy } = require('./venueLinkPolicy')
 const { googleDogPolicy } = require('./dogPolicy')
 const { query } = require('../db/pool')
 const { canonicalVenueId } = require('./venueIdentity')
@@ -216,6 +218,7 @@ function buildGoogleSearchQueries(venue) {
 }
 
 async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
+  if(applyVenueLinkPolicy(venue).link_identity_status==='quarantined')return applyVenueLinkPolicy(venue)
   const checked = venue.google_last_checked ? new Date(venue.google_last_checked) : (venue.profile_last_enriched ? new Date(venue.profile_last_enriched) : null)
   const googleReviews = asJson(venue.google_review_sample, [])
   const hasReviews = Array.isArray(googleReviews) && googleReviews.some(r => r?.text)
@@ -255,7 +258,7 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
       for (const q of buildGoogleSearchQueries(venue)) {
         debug.queriesTried.push(q)
         details = await findPlaceDetails(q)
-        if (details?.providerId) {
+        if (details?.providerId && providerIdentity(venue,details).matched) {
           placeId = details.providerId
           debug.method = 'text_search'
           debug.placeId = placeId
@@ -264,6 +267,7 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
       }
     }
 
+    if(details&&!providerIdentity(venue,details).matched){debug.status='identity_mismatch';debug.reason=providerIdentity(venue,details).reason;logger.warn('[venueProfile] rejected mismatched provider for venue '+venue.id);return {...venue,google_status:'identity_mismatch',google_debug:debug}}
     if (!details) {
       debug.status = 'no_match'
       await query(`UPDATE venues SET google_last_checked=now(), google_status='no_match', google_debug=$2 WHERE id=$1`, [venue.id, JSON.stringify(debug)]).catch(() => {})
@@ -572,7 +576,7 @@ async function getVenueProfile(id, { lat = null, lng = null } = {}) {
     maps_url: mapsUrl,
     instagram: venue.instagram || null,
     facebook: venue.facebook || null,
-    menu_url: venue.menu_url || (['restaurant', 'cafe'].includes(venue.category_slug) ? venue.website : null),
+    menu_url: venue.menu_url || null,
     updated_at: venue.profile_last_enriched || venue.updated_at || new Date().toISOString(),
   }
 }
