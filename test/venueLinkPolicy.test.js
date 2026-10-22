@@ -22,3 +22,5 @@ test('malformed unsafe URLs are never returned as venue website actions',()=>{
  assert.equal(urlKey('javascript:alert(1)'),null);assert.equal(urlKey('https://user:pass@example.com/'),null)
  assert.equal(applyVenueLinkPolicy({id:42,name:'Real venue',website:'javascript:alert(1)'}).website,null)
 })
+
+test('response filtering preserves source timestamps',()=>{const at=new Date('2026-10-22T00:00:00Z');const result=sanitiseVenueLinks({checked_at:at,venues:[]});assert.equal(result.checked_at,at);assert.equal(JSON.parse(JSON.stringify(result)).checked_at,at.toISOString())})
