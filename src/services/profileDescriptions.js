@@ -71,6 +71,7 @@ async function alternativeDescription(venue){
 async function venueDescription(id) {
   const {rows}=await query('SELECT id,name,website,address,google_place_id FROM venues WHERE id=$1',[id])
   const venue=rows[0];if(!venue)return null
+  if(require('./venueLinkPolicy').applyVenueLinkPolicy(venue).link_identity_status==='quarantined')return {paragraphs:[],source_url:null,status:'identity_mismatch'}
   const published=sourceFor(venue,snapshots)
   if(published)return published
   const key=identity(venue),url=publicVenueUrl(venue.website)
