@@ -46,7 +46,7 @@ function owner(v,p){
  const title=normal(p.title+' '+p.heading),domain=normal(h.split('.')[0]).replace(/ /g,''),body=normal(p.text)
  const strong=words.some(w=>w.length>=5&&title.split(' ').includes(w)&&domain.includes(w))
  const full=words.every(w=>title.split(' ').includes(w)),whole=words.join(''),postcode=normal(v.address).match(/\b[a-z]{1,2}[0-9][a-z0-9]? [0-9][a-z]{2}\b/)?.[0]
- if(strong||full&&whole.length>=5&&domain.includes(whole))return [true,'Distinctive venue name agrees with owner domain and prominent heading']
+ if(strong&&full||full&&whole.length>=5&&domain.includes(whole))return [true,'Distinctive venue name agrees with owner domain and prominent heading']
  if(full&&postcode&&body.includes(postcode))return [true,'Venue name and exact catalogue postcode agree with page']
  return [false,'No sufficient venue-ownership evidence; manual review required']
 }
@@ -105,4 +105,5 @@ async function main(){
  console.log('Needs-review examples',JSON.stringify(report.filter(r=>r.status!=='verified').slice(0,15)))
  if(process.env.GITHUB_STEP_SUMMARY)fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,'# Complete venue link audit\n\n'+Object.entries(counts).map(([k,v])=>'- '+k+': '+v).join('\n')+'\n\nUnresolved links are NOT certified. Download the report for every venue.\n')
 }
-main().catch(e=>{console.error(e);process.exitCode=1})
+if(require.main===module)main().catch(e=>{console.error(e);process.exitCode=1})
+module.exports={owner,check,publicIP,social}
