@@ -20,6 +20,9 @@ function applyVenueLinkPolicy(venue){
   statuses[field]={status:allowed?(review?.status||'not_audited'):quarantine?'identity_mismatch':review?.status||'needs_review',reason:quarantine?record.reason:review?.reason||'Venue ownership not confirmed'}
  }
  if(quarantine){
+  for(const field of Object.keys(out))if(/^(google|tripadvisor)/i.test(field))out[field]=null
+  for(const field of ['image_url','photo_url','image','photo','coverPhoto','openingHours','openNow','topReview','description_source'])out[field]=null
+  out.hero_images=[];out.images=[];out.gem_tags=[];out.gem_cautions=[]
   for(const field of ['google_place_id','google_maps_url','maps_url','phone','opening_hours','price_level','rating','rating_count','google_rating','google_reviews','google_review_count','tripadvisor_rating','tripadvisor_review_count','description','profile_description','long_description','summary','menu_summary','google_review_sample','top_review','tripadvisor_top_review','offer'])out[field]=null
   for(const field of ['photos','heroImages','googleReviewSample','menu_items','food_sources','food_keywords','sources'])out[field]=[]
   out.cover_photo=null;out.business_status=null;out.open_now=null;out.tags=[];out.vibe_tags=[];out.why_chosen=[];out.whyChosen=[];out.sappo_score=null;out.dog_access={status:'unknown'};out.link_identity_status='quarantined'
