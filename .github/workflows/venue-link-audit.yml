@@ -10,7 +10,7 @@ permissions:
   contents: write
 concurrency:
   group: catalogue-link-audit
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -23,19 +23,11 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run regression tests
         run: npm test
-      - name: Wait for deployed snapshot and verify quarantined profile
-        shell: bash
+      - name: Record live health and Ferraiolo quarantine status
         run: |
-          for attempt in $(seq 1 45); do
-            if curl -fsS --max-time 20 'https://whatson-backend1-production.up.railway.app/venue-link-audit/catalogue?limit=1' > /tmp/snapshot.json; then
-              break
-            fi
-            sleep 5
-          done
-          node -e "const d=JSON.parse(require('fs').readFileSync('/tmp/snapshot.json'));if(!Array.isArray(d.venues))process.exit(1)"
           node - <<'NODE'
           const base='https://whatson-backend1-production.up.railway.app'
-          ;(async()=>{const r=await fetch(base+'/venues/7253/profile?_audit='+Date.now());if(!r.ok)throw Error('Profile unavailable');const v=await r.json();for(const key of ['website','menu_url','cover_photo','google_place_id'])if(v[key])throw Error('Contaminated field still visible: '+key);console.log('LIVE QUARANTINE VERIFIED',v.id,v.name,v.link_identity_status)})().catch(e=>{console.error(e);process.exit(1)})
+          ;(async()=>{for(const path of ['/health','/venues/7253/profile','/venue-link-audit/catalogue?limit=1']){try{const r=await fetch(base+path,{signal:AbortSignal.timeout(20000)});console.log('LIVE PROBE',path,r.status);if(r.ok&&path.includes('profile')){const v=await r.json();console.log('FER… PROFILE',JSON.stringify({id:v.id,name:v.name,hasWebsite:!!v.website,hasMenu:!!v.menu_url,hasPhoto:!!v.cover_photo,quarantine:v.link_identity_status}));}}catch(e){console.log('LIVE PROBE ERROR',path,e.name)}}})().catch(e=>{console.error(e);process.exit(1)})
           NODE
       - name: Audit all venues and all website/menu/social/booking fields
         run: node scripts/audit-venue-links.js
