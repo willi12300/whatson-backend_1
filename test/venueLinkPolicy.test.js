@@ -34,3 +34,8 @@ test('a website/menu-only audit does not falsely certify or remove unaudited soc
   assert.equal(v.link_verification.fields.facebook.status,'not_audited')
  }finally{Object.assign(audit,before)}
 })
+
+test('quarantine cannot leak cached photos or ratings through alternate provider fields',()=>{
+ const v=applyVenueLinkPolicy({id:7253,name:"Ferraiolo's Italian Bistro",category_slug:'restaurant',photo_url:'wrong-photo',image_url:'wrong-photo',tripadvisorRating:4.9,tripadvisorReviews:100,googleRating:4.8,googleMapsUrl:'https://maps.google.com/wrong',topReview:{text:'Wrong venue'}})
+ for(const k of ['photo_url','image_url','tripadvisorRating','tripadvisorReviews','googleRating','googleMapsUrl','topReview'])assert.equal(v[k],null,k)
+})
