@@ -1,7 +1,7 @@
 const audit=require('../../data/venue-link-audit.json')
 const {normal}=require('./providerIdentity')
 const records=new Map(audit.venues.map(v=>[String(v.id),v]))
-const fields=['website','website_url','websiteUrl','menu_url','menuUrl','booking_url','bookingUrl','reservation_url','reservations_url','instagram','instagram_url','facebook','facebook_url']
+const fields=['website','website_url','websiteUrl','url','menu_url','menuUrl','booking_url','bookingUrl','reservation_url','reservations_url','instagram','instagram_url','facebook','facebook_url']
 function urlKey(value){try{const u=new URL(value);if(!['http:','https:'].includes(u.protocol)||u.username||u.password)return null;u.hash='';return u.href.replace(/\/$/,'')}catch{return null}}
 function applyVenueLinkPolicy(venue){
  const record=records.get(String(venue.id)),matches=record&&normal(record.name)===normal(venue.name)
@@ -21,8 +21,8 @@ function applyVenueLinkPolicy(venue){
   out.cover_photo=null;out.business_status=null;out.open_now=null;out.tags=[];out.vibe_tags=[];out.why_chosen=[];out.whyChosen=[];out.sappo_score=null;out.dog_access={status:'unknown'};out.link_identity_status='quarantined'
  }
  // These alternate provider fields can otherwise recreate hidden links downstream.
- if(audit.enforce_verified||quarantine){out.socials={};out.social_links={};out.menus=[];out.menu_links=[];out.googleMapsUrl=out.google_maps_url}
- out.link_verification={checked_at:audit.checked_at,status:quarantine?'identity_mismatch':'audited',fields:statuses}
+ if(audit.enforce_verified||quarantine){out.socials={};out.social_links={};out.menus=[];out.menu_links=[];out.menu={};out.googleMapsUrl=out.google_maps_url}
+ out.link_verification={checked_at:audit.checked_at,status:quarantine?'identity_mismatch':matches?'audited':'not_audited',fields:statuses}
  return out
 }
 function sanitiseVenueLinks(value){
