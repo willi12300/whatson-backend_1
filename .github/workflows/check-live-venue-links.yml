@@ -1,0 +1,31 @@
+name: Record live venue link deployment
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/check-live-venue-links.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Record actual backend state without equating a CI pass to deployment
+        run: |
+          node - <<'NODE'
+          const fs=require('fs'),base='https://whatson-backend1-production.up.railway.app'
+          ;(async()=>{
+            const r=await fetch(base+'/venues/7253/profile?_audit='+Date.now(),{signal:AbortSignal.timeout(30000)})
+            const v=await r.json()
+            const state={checked_at:new Date().toISOString(),http_status:r.status,id:v.id,name:v.name,website_withheld:!v.website,menu_withheld:!v.menu_url,wrong_photo_withheld:!v.cover_photo,wrong_provider_withheld:!v.google_place_id,identity_status:v.link_identity_status||'not_deployed'}
+            state.fix_live=r.ok&&state.website_withheld&&state.menu_withheld&&state.wrong_photo_withheld&&state.wrong_provider_withheld&&state.identity_status==='quarantined'
+            console.log('LIVE_DEPLOYMENT_RESULT',JSON.stringify(state))
+            fs.writeFileSync('live-venue-link-check.json',JSON.stringify(state,null,2))
+            if(process.env.GITHUB_STEP_SUMMARY)fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,'# Live deployment status\n\nFix live: **'+state.fix_live+'**\n\n'+JSON.stringify(state,null,2)+'\n\nA successful recording job is not proof of deployment. Read fix_live.\n')
+          })().catch(e=>{console.error(e);process.exit(1)})
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-venue-link-check
+          path: live-venue-link-check.json
