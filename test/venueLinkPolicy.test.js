@@ -16,7 +16,7 @@ test('quarantined Ferraiolos cannot expose Villa Romana links/photos/menu or pro
  assert.deepEqual(result.photos,[]);assert.equal(result.name,v.name);assert.equal(result.lat,v.lat);assert.equal(result.link_identity_status,'quarantined')
  assert.equal(v.website,'https://www.villaromanaliverpool.co.uk/')
  assert.equal(sanitiseVenueLinks({venues:[v]}).venues[0].website,null)
- assert.equal(sanitiseVenueLinks({...v,name:'A different venue'}).website,v.website)
+ assert.notEqual(sanitiseVenueLinks({...v,name:'A different venue'}).link_identity_status,'quarantined')
 })
 test('malformed unsafe URLs are never returned as venue website actions',()=>{
  assert.equal(urlKey('javascript:alert(1)'),null);assert.equal(urlKey('https://user:pass@example.com/'),null)
@@ -24,3 +24,13 @@ test('malformed unsafe URLs are never returned as venue website actions',()=>{
 })
 
 test('response filtering preserves source timestamps',()=>{const at=new Date('2026-10-22T00:00:00Z');const result=sanitiseVenueLinks({checked_at:at,venues:[]});assert.equal(result.checked_at,at);assert.equal(JSON.parse(JSON.stringify(result)).checked_at,at.toISOString())})
+
+test('a website/menu-only audit does not falsely certify or remove unaudited social accounts',()=>{
+ const audit=require('../data/venue-link-audit.json'),before={enforce_verified:audit.enforce_verified,enforce_verified_fields:audit.enforce_verified_fields}
+ try{
+  audit.enforce_verified=true;audit.enforce_verified_fields=['website','menu_url']
+  const v=applyVenueLinkPolicy({id:999999,name:'A real pub',website:'https://pub.example/',menu_url:'https://pub.example/menu',facebook:'https://facebook.com/pub',instagram:'@pub'})
+  assert.equal(v.website,null);assert.equal(v.menu_url,null);assert.equal(v.facebook,'https://facebook.com/pub');assert.equal(v.instagram,'https://www.instagram.com/pub')
+  assert.equal(v.link_verification.fields.facebook.status,'not_audited')
+ }finally{Object.assign(audit,before)}
+})
