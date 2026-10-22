@@ -1,0 +1,42 @@
+name: Apply completed website menu audit
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/apply-venue-link-audit.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Load complete audited catalogue and scope enforcement correctly
+        env:
+          AUDIT_BRANCH: audit/venue-links-39701453997
+        run: |
+          git fetch origin "$AUDIT_BRANCH"
+          git checkout FETCH_HEAD -- data/venue-link-audit.json reports/venue-links.csv reports/venue-links-summary.json
+          node - <<'NODE'
+          const fs=require('fs'),p='data/venue-link-audit.json',d=JSON.parse(fs.readFileSync(p))
+          if(d.counts.venues!==10209||d.venues.length!==10209||d.counts.unique_links!==7611)throw Error('Unexpected or incomplete catalogue audit')
+          d.enforce_verified=true
+          d.enforce_verified_fields=['website','menu_url']
+          d.coverage={website:'all public catalogue records',menu_url:'all public catalogue records',instagram:'not certified: extended snapshot was not deployed',facebook:'not certified: extended snapshot was not deployed',booking_url:'not certified: extended snapshot was not deployed'}
+          fs.writeFileSync(p,JSON.stringify(d))
+          console.log('Prepared complete website/menu manifest',JSON.stringify(d.counts))
+          NODE
+          git add data/venue-link-audit.json reports/venue-links.csv reports/venue-links-summary.json
+          git -c user.name='SAPPO link audit' -c user.email='sappo-audit@users.noreply.github.com' commit -m 'Withhold unverified website/menu links across audited catalogue'
+          git pull --rebase origin main
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Test production code against the full enforcement manifest
+        run: npm test
+      - name: Publish only after all checks pass
+        run: git push origin HEAD:main
