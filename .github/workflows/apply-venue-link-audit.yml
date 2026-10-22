@@ -36,7 +36,7 @@ jobs:
           git -c user.name='SAPPO link audit' -c user.email='sappo-audit@users.noreply.github.com' commit -m 'Withhold unverified website/menu links across audited catalogue'
           git pull --rebase origin main
       - run: npm install --ignore-scripts --no-audit --no-fund
-      - name: Test production code against the full enforcement manifest
+      - name: Validate source policy and cache behaviour with the complete enforcement manifest
         run: npm test
       - name: Publish only after all checks pass
         run: git push origin HEAD:main
