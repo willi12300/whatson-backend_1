@@ -27,7 +27,7 @@ function applyVenueLinkPolicy(venue){
 }
 function sanitiseVenueLinks(value){
  if(Array.isArray(value))return value.map(sanitiseVenueLinks)
- if(!value||typeof value!=='object')return value
+ if(!value||typeof value!=='object'||value instanceof Date||Buffer.isBuffer(value))return value
  let result=Object.fromEntries(Object.entries(value).map(([k,v])=>[k,sanitiseVenueLinks(v)]))
  if(result.id!=null&&typeof result.name==='string'&&('category_slug'in result)&&!result.eventId&&result.itemType!=='event'&&result.category_slug!=='event')result=applyVenueLinkPolicy(result)
  return result
