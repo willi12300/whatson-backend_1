@@ -62,9 +62,15 @@ function check(v,field,url,pages,web){
  return {...out,reason:'Menu ownership not sufficiently corroborated'}
 }
 async function catalogue(){
- const rows=[];let after=0
- for(;;){const r=await fetch(BASE+'/venue-link-audit/catalogue?limit=2000&after='+after+'&_audit='+Date.now(),{signal:AbortSignal.timeout(60000)});if(!r.ok)throw Error('Complete audit snapshot unavailable: '+r.status);const d=await r.json();rows.push(...d.venues);if(!d.has_more)break;if(d.next_after<=after)throw Error('Snapshot pagination did not advance');after=d.next_after}
- return rows
+ const rows=[];let after=0,extended=true
+ for(;;){
+  let r=await fetch(BASE+'/venue-link-audit/catalogue?limit=2000&after='+after+'&_audit='+Date.now(),{signal:AbortSignal.timeout(30000)})
+  if(!r.ok&&after===0){extended=false;console.log('Extended audit snapshot not deployed; checking every website/menu in public catalogue; social/booking completeness not certified');break}
+  if(!r.ok)throw Error('Complete snapshot unavailable: '+r.status)
+  const d=await r.json();rows.push(...d.venues);if(!d.has_more)break;after=d.next_after
+ }
+ if(!extended){let offset=0;for(;;){const r=await fetch(BASE+'/venues?limit=2000&offset='+offset+'&_audit='+Date.now(),{signal:AbortSignal.timeout(60000)});if(!r.ok)throw Error('Public catalogue unavailable: '+r.status);const d=await r.json();rows.push(...d.venues);if(!d.has_more)break;offset=d.next_offset}}
+ console.log('Extended social/booking snapshot',extended);return rows
 }
 async function main(){
  const rows=await catalogue()
