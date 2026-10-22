@@ -18,6 +18,8 @@ test('renaming or changing the website invalidates just the source excerpt ident
 test('a cache hit avoids requests, while website changes and expiry refresh only the excerpt',async()=>{
   const db=require('../src/db/pool'),axios=require('axios')
   const originalQuery=db.query,originalGet=axios.get
+  const policy=require('../src/services/venueLinkPolicy'),originalPolicy=policy.applyVenueLinkPolicy
+  policy.applyVenueLinkPolicy=v=>v
   const venue={id:7041,name:'Maray',website:'https://maray.co.uk/',photos:['keep-photo']}
   let cached=null,expired=false,requests=0
   db.query=async(sql,params)=>{
@@ -37,7 +39,7 @@ test('a cache hit avoids requests, while website changes and expiry refresh only
     await venueDescription(7041);assert.equal(requests,2)
     expired=true;await venueDescription(7041);assert.equal(requests,3)
     assert.deepEqual(venue.photos,['keep-photo'])
-  }finally{db.query=originalQuery;axios.get=originalGet}
+  }finally{db.query=originalQuery;axios.get=originalGet;policy.applyVenueLinkPolicy=originalPolicy}
 })
 
 test('source snapshots reject renamed venues, changed branches and stale checks',()=>{
@@ -78,4 +80,13 @@ test('missing website descriptions can use published source summaries without in
  assert.equal(recordedDescription({...venue,name:'Different',google_place_id:'other'},[row],now),null)
  assert.equal(recordedDescription(venue,[{...row,created_at:'2020-01-01'}],now),null)
  assert.equal(recordedDescription(venue,[{...row,raw:{reviews:[{text:'Best cafe in the world'}]}}],now),null)
+})
+
+test('unverified website descriptions are withheld without fetching or serving cached excerpts',async()=>{
+ const db=require('../src/db/pool'),policy=require('../src/services/venueLinkPolicy'),originalQuery=db.query,originalPolicy=policy.applyVenueLinkPolicy
+ db.query=async sql=>{assert.ok(sql.startsWith('SELECT id,name,website'));return {rows:[{id:1,name:'Example',website:'https://unverified.example/'}]}}
+ policy.applyVenueLinkPolicy=v=>({...v,website:null})
+ delete require.cache[require.resolve('../src/services/profileDescriptions')]
+ try{const result=await require('../src/services/profileDescriptions').venueDescription(1);assert.equal(result.status,'source_not_verified');assert.deepEqual(result.paragraphs,[])}
+ finally{db.query=originalQuery;policy.applyVenueLinkPolicy=originalPolicy;delete require.cache[require.resolve('../src/services/profileDescriptions')]}
 })
