@@ -1,0 +1,16 @@
+{
+  "checked_at": "2026-10-22T07:13:42.449Z",
+  "coverage": {
+    "all_catalogue_names": true,
+    "cached_provider_names": false,
+    "independently_verified_all_names": false
+  },
+  "counts": {
+    "venues": 10209,
+    "provider_agreement": 0,
+    "identity_conflict": 2,
+    "needs_review": 10207,
+    "flagged": 152
+  },
+  "limitations": "Automated screening is not independent certification of every name. Uncorroborated records require review; no automatic renames."
+}

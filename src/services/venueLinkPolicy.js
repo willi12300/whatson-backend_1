@@ -8,7 +8,9 @@ const enforced=field=>audit.enforce_verified&&(!audit.enforce_verified_fields||a
 function normaliseFieldURL(field,value){if(typeof value!=='string')return value;const raw=value.trim(),kind=canonicalField(field);if(['instagram','facebook'].includes(kind)&&/^@?[a-z0-9._]+$/i.test(raw)&&!raw.includes(kind+'.com'))return 'https://www.'+kind+'.com/'+raw.replace(/^@/,'');return /^[a-z][a-z0-9+.-]*:/i.test(raw)?raw:'https://'+raw}
 function applyVenueLinkPolicy(venue){
  const record=records.get(String(venue.id)),matches=record&&normal(record.name)===normal(venue.name)
- const quarantine=matches&&record.quarantine_identity
+ const identityReview=require('./venueNameAudit').identityAuditRecord(venue)
+ const quarantine=(matches&&record.quarantine_identity)||identityReview?.status==='identity_conflict'
+ const quarantineReason=identityReview?.status==='identity_conflict'?identityReview.reason:record?.reason
  const checked=matches?record.links||[]:[]
  const out={...venue},statuses={}
  for(const field of fields){
@@ -17,7 +19,7 @@ function applyVenueLinkPolicy(venue){
   const key=urlKey(out[field]),review=checked.find(l=>urlKey(l.url)===key&&l.fields?.includes(canonicalField(field)))
   const allowed=!quarantine&&key&&(!enforced(field)||review?.status==='verified')
   if(!allowed)out[field]=null
-  statuses[field]={status:allowed?(review?.status||'not_audited'):quarantine?'identity_mismatch':review?.status||'needs_review',reason:quarantine?record.reason:review?.reason||'Venue ownership not confirmed'}
+  statuses[field]={status:allowed?(review?.status||'not_audited'):quarantine?'identity_mismatch':review?.status||'needs_review',reason:quarantine?quarantineReason:review?.reason||'Venue ownership not confirmed'}
  }
  if(quarantine){
   for(const field of Object.keys(out))if(/^(google|tripadvisor)/i.test(field))out[field]=null
@@ -31,6 +33,7 @@ function applyVenueLinkPolicy(venue){
  if(enforced('menu_url')||quarantine){out.menus=[];out.menu_links=[];out.menu={}}
  if(enforced('instagram')||enforced('facebook')||quarantine){out.socials={};out.social_links={}}
  if(quarantine)out.googleMapsUrl=null
+ out.name_verification=identityReview||{status:'not_audited'}
  out.link_verification={checked_at:audit.checked_at,status:quarantine?'identity_mismatch':matches?'audited':'not_audited',fields:statuses}
  return out
 }

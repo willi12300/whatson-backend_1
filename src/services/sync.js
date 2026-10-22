@@ -46,6 +46,12 @@ async function upsertVenueRecord(v,city,query) {
   if(!venueId&&googlePlaceId){const {rows}=await query('SELECT id FROM venues WHERE google_place_id=$1 ORDER BY claimed DESC,id ASC LIMIT 1',[googlePlaceId]);venueId=rows[0]?.id||null}
   if(!venueId){const duplicate=await findDuplicateVenue(v,query);venueId=duplicate?.id||null;identityMatch=!!duplicate}
   if(venueId)venueId=await canonicalVenueId(venueId,query)
+  // A historical bad provider association must not rename/move the original
+  // venue during the next sync. Leave it for identity repair instead.
+  if(venueId&&googlePlaceId){
+    const {rows}=await query('SELECT id,name,lat,lng FROM venues WHERE id=$1',[venueId])
+    if(rows[0]&&!require('./providerIdentity').providerIdentity(rows[0],v).matched)throw new Error('Provider identity conflicts with existing venue '+venueId+'; review required')
+  }
   const isNew = !venueId
   if (venueId) {
     const incomingPhotos = hasUsablePhotos(v.photos) ? JSON.stringify(v.photos) : null

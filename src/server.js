@@ -97,6 +97,9 @@ async function start() {
     logger.info('Migrations done.')
     const { runReviewedVenueMerges } = require('./services/mergeVenues')
     await runReviewedVenueMerges(pool)
+    const audit=await require('./services/venueNameAudit').refreshVenueNameAudit((text,params)=>pool.query(text,params))
+    logger.info('[venue-name-audit] '+JSON.stringify(audit.counts))
+
     try {
       const { seedMissions } = require('./services/seedMissions')
       const seeded = await seedMissions()
@@ -113,6 +116,7 @@ async function start() {
   app.listen(config.port, () => {
     logger.info(`🚀 SAPPO API running on port ${config.port}`)
     require('./services/eventRefresh').startEventRefresh()
+    setInterval(()=>require('./services/venueNameAudit').refreshVenueNameAudit((text,params)=>pool.query(text,params)).catch(e=>logger.error('Venue name audit refresh failed:',e.message)),15*60*1000).unref()
     // This updates thousands of venue rows. It must not keep Railway's public
     // port closed while an otherwise healthy app is marked Active.
     Promise.resolve().then(async () => {

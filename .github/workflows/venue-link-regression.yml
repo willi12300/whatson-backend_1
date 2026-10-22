@@ -6,6 +6,13 @@ on:
     paths:
       - '.github/workflows/venue-link-regression.yml'
       - 'src/services/providerIdentity.js'
+      - 'src/services/venueNameAudit.js'
+      - 'src/services/sync.js'
+      - 'src/routes/venueLinkAudit.js'
+      - 'src/server.js'
+      - 'migrations/022_cabin_cavern_identity.sql'
+      - 'scripts/audit-venue-names.js'
+      - 'test/venueNameAudit.test.js'
       - 'src/services/venueLinkPolicy.js'
       - 'src/services/profileDescriptions.js'
       - 'scripts/audit-venue-links.js'

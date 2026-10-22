@@ -358,6 +358,7 @@ async function maybeUpdateGoogleProfile(venue, { force = false } = {}) {
 }
 
 async function maybeUpdateTripAdvisor(venue, { force = false } = {}) {
+  if(applyVenueLinkPolicy(venue).link_identity_status==='quarantined')return applyVenueLinkPolicy(venue)
   if (!hasTripAdvisor()) return venue
   const checked = venue.tripadvisor_last_checked ? new Date(venue.tripadvisor_last_checked) : null
   // 30-day window, consistent with Google. Gate on "checked recently" ALONE —
